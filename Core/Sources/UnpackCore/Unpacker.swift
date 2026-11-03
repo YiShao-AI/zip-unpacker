@@ -131,13 +131,19 @@ public struct Unpacker {
         let zip = try ZipArchive(url: archiveURL)
         zip.chunkSize = chunkSize
         let password = try choosePassword(for: zip, layer: depth)
-        let layerTotal = zip.entries.reduce(Int64(0)) { $0 + Int64(clamping: $1.uncompressedSize) }
+        // extract() reports archive bytes read, so measure the layer in compressed bytes.
+        let layerTotal = zip.entries.reduce(Int64(0)) { $0 + Int64(clamping: $1.compressedSize) }
         var layerBytes: Int64 = 0
         let tick: (Int) -> Void = { n in
             layerBytes += Int64(n)
             state.total += Int64(n)
             state.progress?(state.total)
-            state.onProgress?(UnpackProgress(layer: depth, layerBytes: layerBytes, layerTotal: layerTotal,
+            state.onProgress?(UnpackProgress(layer: depth, layerBytes: min(layerBytes, layerTotal), layerTotal: layerTotal,
+                                             totalBytes: state.total))
+        }
+        defer {
+            // Encryption headers aren't counted as payload; report the finished layer as complete.
+            state.onProgress?(UnpackProgress(layer: depth, layerBytes: layerTotal, layerTotal: layerTotal,
                                              totalBytes: state.total))
         }
 
