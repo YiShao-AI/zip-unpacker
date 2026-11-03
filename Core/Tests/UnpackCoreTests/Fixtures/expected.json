@@ -1,0 +1,19 @@
+{
+ "nested": {
+  "说明.txt": "b0fd493a375e1b609ec58b7b41418dae3df5091c2811d9d2215ad3b55b1241d5",
+  "数据.txt": "c6e5dc2df8910845ec921e13931faaa5eacda8c3c14f215e2b0c318241e5046a",
+  "random.bin": "728e6f291effb341451970bdcadd69b4408973fe5d144e2fc5b3ac5da4b427c4"
+ },
+ "aes128": {
+  "clip.txt": "c6e5dc2df8910845ec921e13931faaa5eacda8c3c14f215e2b0c318241e5046a"
+ },
+ "zipcrypto": {
+  "old.txt": "c6e5dc2df8910845ec921e13931faaa5eacda8c3c14f215e2b0c318241e5046a"
+ },
+ "plain": {
+  "report.docx": "9dfd3bb8b1518dd74f29a1f11016d45ebdeb50d3d8bc3c557b9ff0d6a81fc4c3",
+  "inner/deep.txt": "b0fd493a375e1b609ec58b7b41418dae3df5091c2811d9d2215ad3b55b1241d5",
+  "evil.txt": "b0fd493a375e1b609ec58b7b41418dae3df5091c2811d9d2215ad3b55b1241d5",
+  "统一码.txt": "b0fd493a375e1b609ec58b7b41418dae3df5091c2811d9d2215ad3b55b1241d5"
+ }
+}

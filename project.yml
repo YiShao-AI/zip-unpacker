@@ -1,0 +1,51 @@
+name: Unpacker
+options:
+  bundleIdPrefix: com.yishao
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  UnpackCore:
+    path: Core
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  Unpacker:
+    type: application
+    platform: iOS
+    sources:
+      - App
+    dependencies:
+      - package: UnpackCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yishao.unpacker
+        PRODUCT_NAME: Unpacker
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Unpacker
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # Show Documents/ in the Files app (On My iPhone › Unpacker)
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        # Appear in "Open in…" / share sheets for any file (Baidu files arrive as .pdf, .zip, anything)
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Any file
+            LSHandlerRank: Alternate
+            CFBundleTypeRole: Viewer
+            LSItemContentTypes: [public.data, public.item, public.content, public.archive, public.zip-archive, com.adobe.pdf]
+schemes:
+  Unpacker:
+    build:
+      targets:
+        Unpacker: all
