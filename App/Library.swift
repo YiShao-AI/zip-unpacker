@@ -229,6 +229,26 @@ final class Library: ObservableObject {
         refresh()
     }
 
+    /// Deletes a file or an original's folder inside a finished batch. A folder left empty goes too.
+    func delete(_ url: URL, inBatch batch: URL) {
+        let parent = url.deletingLastPathComponent()
+        do {
+            try fm.removeItem(at: url)
+        } catch {
+            notice = "Couldn't delete “\(url.lastPathComponent)”: \(error.localizedDescription)"
+            return
+        }
+        let batchPath = batch.standardizedFileURL.path
+        var dir = parent
+        while dir.standardizedFileURL.path != batchPath, dir.standardizedFileURL.path.hasPrefix(batchPath + "/"),
+              ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []).isEmpty {
+            try? fm.removeItem(at: dir)
+            dir = dir.deletingLastPathComponent()
+        }
+        refresh()
+        say("Deleted “\(url.lastPathComponent)”.")
+    }
+
     func clearOriginals() {
         for url in (try? fm.contentsOfDirectory(at: originalsDir, includingPropertiesForKeys: nil)) ?? [] {
             try? fm.removeItem(at: url)

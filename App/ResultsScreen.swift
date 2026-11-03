@@ -57,6 +57,25 @@ struct FolderSection: Identifiable {
     let files: [URL]
 }
 
+enum DeleteTarget: Identifiable {
+    case file(URL)
+    case folder(FolderSection)
+
+    var id: URL {
+        switch self {
+        case .file(let u): return u
+        case .folder(let f): return f.id
+        }
+    }
+    var name: String {
+        switch self {
+        case .file(let u): return u.lastPathComponent
+        case .folder(let f): return f.title
+        }
+    }
+    var url: URL { id }
+}
+
 struct PlayerRequest: Identifiable {
     let id = UUID()
     let items: [URL]
@@ -74,6 +93,7 @@ struct BatchView: View {
     @State private var confirmDelete = false
     @State private var pickFolder = false
     @State private var confirmRename = false
+    @State private var deleting: DeleteTarget?
     @State private var reload = 0
 
     private var batch: Batch? { library.batches.first { $0.url == batchURL } }
@@ -121,9 +141,39 @@ struct BatchView: View {
                 Section {
                     ForEach(section.files, id: \.self) { url in
                         FileRow(url: url, base: section.id) { open(url) }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) { deleting = .file(url) } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                            .contextMenu {
+                                Button { share = ShareItems(urls: [url]) } label: {
+                                    Label("Share", systemImage: "square.and.arrow.up")
+                                }
+                                Button(role: .destructive) { deleting = .file(url) } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
                     }
                 } header: {
-                    Label(section.title, systemImage: "folder").textCase(nil)
+                    HStack {
+                        Label(section.title, systemImage: "folder")
+                        Spacer()
+                        if section.id != batchURL {
+                            Menu {
+                                Button { share = ShareItems(urls: [section.id]) } label: {
+                                    Label("Share folder", systemImage: "square.and.arrow.up")
+                                }
+                                Button(role: .destructive) { deleting = .folder(section) } label: {
+                                    Label("Delete folder", systemImage: "trash")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle").font(.body).frame(width: 44, height: 32)
+                            }
+                            .accessibilityLabel("Folder options for \(section.title)")
+                        }
+                    }
+                    .textCase(nil)
                 }
             }
 
@@ -157,6 +207,16 @@ struct BatchView: View {
             library.setExportDestination(url)
             Task { await library.export(batchURL) }
         }
+        .confirmationDialog(deleteTitle, isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible, presenting: deleting) { target in
+            Button(deleteButton(target), role: .destructive) {
+                library.delete(target.url, inBatch: batchURL)
+                deleting = nil
+                reload += 1
+            }
+        } message: { _ in
+            Text("It's removed from Unpacker. Copies already exported elsewhere are kept.")
+        }
         .confirmationDialog("Rename the videos in “\(batchURL.lastPathComponent)”?", isPresented: $confirmRename,
                             titleVisibility: .visible) {
             Button("Rename videos") {
@@ -166,6 +226,19 @@ struct BatchView: View {
         } message: {
             Text("Each video is named after its original’s folder, e.g. 7月13日舞蹈 (1).mp4, (2)… Copies already exported elsewhere keep their old names.")
         }
+    }
+
+    private var deleteTitle: String {
+        switch deleting {
+        case .folder(let f)?: return "Delete the folder “\(f.title)” and its \(plural(f.files.count, "file"))?"
+        case .file(let u)?: return "Delete “\(u.lastPathComponent)”?"
+        case nil: return ""
+        }
+    }
+
+    private func deleteButton(_ target: DeleteTarget) -> String {
+        if case .folder = target { return "Delete folder" }
+        return "Delete"
     }
 
     private func exportLabel(_ batch: Batch) -> String {
