@@ -90,7 +90,7 @@ struct VideoPager: UIViewControllerRepresentable {
         pager.setViewControllers([c.page(target)], direction: target > c.shown ? .forward : .reverse, animated: true) { _ in
             c.transitioning = false
             c.didShow(target)
-            if c.parent.index != target { c.parent.index = target }
+            if c.parent?.index != target { c.parent?.index = target }
         }
     }
 
