@@ -60,7 +60,7 @@ struct InboxList: View {
                     .onDelete { idx in idx.map { pending[$0].url }.forEach(library.delete) }
             } header: {
                 HStack {
-                    Text(heading)
+                    Text(heading).textCase(.uppercase)
                     Spacer()
                     if !pending.isEmpty {
                         if selecting {
@@ -76,6 +76,7 @@ struct InboxList: View {
                     }
                 }
                 .font(.footnote)
+                .textCase(nil)
             } footer: {
                 if !pending.isEmpty {
                     Text(selecting ? "Tick the files to put in this batch."
@@ -140,7 +141,9 @@ struct InboxList: View {
     private func meta(_ item: FileItem) -> String {
         var s = sizeText(item.size)
         if let added = item.added {
-            s += " · added " + RelativeDateTimeFormatter().localizedString(for: added, relativeTo: Date())
+            let f = RelativeDateTimeFormatter()
+            f.dateTimeStyle = .named
+            s += " · added " + f.localizedString(for: min(added, Date()), relativeTo: Date())
         }
         return s
     }
@@ -174,15 +177,16 @@ struct InboxList: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .accessibilityLabel(selecting ? item.name : "Unpack \(item.name) now")
             .accessibilityAddTraits(selecting && isSelected ? .isSelected : [])
 
             Button { removing = item } label: {
                 Image(systemName: "xmark").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
                     .frame(width: 36, height: 44)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .accessibilityLabel("Remove \(item.name)")
         }
     }
