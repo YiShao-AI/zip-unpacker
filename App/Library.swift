@@ -71,6 +71,9 @@ enum ExportDestination {
         return url
     }
 
+    /// Screenshot mode only: shows a destination name without a real bookmark.
+    static func setDemoName(_ name: String) { UserDefaults.standard.set(name, forKey: nameKey) }
+
     static func clear() {
         UserDefaults.standard.removeObject(forKey: bookmarkKey)
         UserDefaults.standard.removeObject(forKey: nameKey)
@@ -225,6 +228,13 @@ final class Library: ObservableObject {
         case .failure(let error):
             return "Export to “\(dest.lastPathComponent)” failed: \(error.localizedDescription) The batch is still in the app."
         }
+    }
+
+    /// Screenshot mode only: a frozen mid-batch state.
+    func showDemoProgress() {
+        isRunning = true
+        progressFraction = 0.55
+        progressText = "3 of 5: 7月19日舞蹈.pdf · 31.2 MB"
     }
 
     // MARK: Delete

@@ -10,9 +10,10 @@ struct UnpackerApp: App {
             ContentView()
                 .environmentObject(library)
                 .onOpenURL { library.importFile($0) }
+                .task { DemoMode.seed(library) }
         }
         .onChange(of: scenePhase) { phase in
-            if phase == .active { library.prepare() }
+            if phase == .active && !DemoMode.isOn { library.prepare() }
         }
     }
 }

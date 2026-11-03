@@ -13,9 +13,10 @@ struct ContentView: View {
     @State private var showImporter = false
     @State private var showSettings = false
     @State private var shareItems: ShareItems?
+    @State private var path: [FileItem] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 if passwords.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Section {
@@ -118,6 +119,15 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showSettings) { SettingsView().environmentObject(library) }
             .sheet(item: $shareItems) { ActivityView(items: $0.urls) }
+            .task {
+                guard DemoMode.isOn else { return }
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                switch DemoMode.screen {
+                case "settings": showSettings = true
+                case "batch", "results": if let first = library.batches.first { path = [first] }
+                default: break
+                }
+            }
             .alert(library.notice ?? "", isPresented: Binding(get: { library.notice != nil },
                                                              set: { if !$0 { library.notice = nil } })) {
                 Button("OK", role: .cancel) {}

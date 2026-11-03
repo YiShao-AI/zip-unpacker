@@ -40,3 +40,48 @@ jobs:
           name: Unpacker-unsigned-ipa
           path: Unpacker-unsigned.ipa
           retention-days: 30
+
+  screenshots:
+    needs: test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Pick and boot an iPhone simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devs = [d for rt, ds in json.load(sys.stdin)["devices"].items() if "iOS" in rt for d in ds]
+          phones = [d for d in devs if d["name"].startswith("iPhone") and "Pro" in d["name"] and "Max" not in d["name"]] \
+                   or [d for d in devs if d["name"].startswith("iPhone")]
+          print(phones[-1]["udid"])')
+          echo "SIM=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3
+      - name: Build for the simulator
+        run: |
+          xcodebuild -project Unpacker.xcodeproj -scheme Unpacker -configuration Debug \
+            -destination "id=$SIM" -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 50
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Take a screenshot of each screen
+        run: |
+          APP=build/Build/Products/Debug-iphonesimulator/Unpacker.app
+          BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
+          xcrun simctl install "$SIM" "$APP"
+          mkdir -p screenshots
+          for screen in inbox progress results batch settings; do
+            xcrun simctl terminate "$SIM" "$BUNDLE" 2>/dev/null || true
+            xcrun simctl launch "$SIM" "$BUNDLE" -UnpackerDemo YES -UnpackerScreen "$screen"
+            sleep 5
+            xcrun simctl io "$SIM" screenshot "screenshots/$screen.png"
+          done
+          ls -la screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simulator-screenshots
+          path: screenshots/*.png
+          retention-days: 30
