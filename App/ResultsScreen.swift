@@ -73,6 +73,8 @@ struct BatchView: View {
     @State private var share: ShareItems?
     @State private var confirmDelete = false
     @State private var pickFolder = false
+    @State private var confirmRename = false
+    @State private var reload = 0
 
     private var batch: Batch? { library.batches.first { $0.url == batchURL } }
     private var videos: [URL] { sections.flatMap(\.files).filter(Media.isVideo) }
@@ -104,6 +106,12 @@ struct BatchView: View {
                     Button { share = ShareItems(urls: [batchURL]) } label: {
                         Label("Share folder (extra)", systemImage: "square.and.arrow.up")
                     }
+
+                    if !videos.isEmpty {
+                        Button { confirmRename = true } label: {
+                            Label("Rename videos after their folders", systemImage: "character.cursor.ibeam")
+                        }
+                    }
                 } footer: {
                     Text("Sharing a whole folder doesn't work with every app; Copy or the Files app always does.")
                 }
@@ -126,7 +134,7 @@ struct BatchView: View {
         }
         .navigationTitle(batchURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: batch?.fileCount) {
+        .task(id: "\(batch?.fileCount ?? 0)-\(reload)") {
             let url = batchURL
             sections = await Task.detached { Self.load(url) }.value
             if DemoMode.isOn, DemoMode.screen == "player", player == nil, !videos.isEmpty {
@@ -148,6 +156,15 @@ struct BatchView: View {
             guard case .success(let url) = result else { return }
             library.setExportDestination(url)
             Task { await library.export(batchURL) }
+        }
+        .confirmationDialog("Rename the videos in “\(batchURL.lastPathComponent)”?", isPresented: $confirmRename,
+                            titleVisibility: .visible) {
+            Button("Rename videos") {
+                library.renameVideos(inBatch: batchURL)
+                reload += 1
+            }
+        } message: {
+            Text("Each video is named after its original’s folder, e.g. 7月13日舞蹈 (1).mp4, (2)… Copies already exported elsewhere keep their old names.")
         }
     }
 

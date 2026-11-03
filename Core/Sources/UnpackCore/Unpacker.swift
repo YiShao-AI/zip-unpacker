@@ -20,7 +20,7 @@ public struct UnpackReport {
     /// Folder holding the final contents.
     public let folder: URL
     /// Every file inside `folder`, recursively.
-    public let files: [URL]
+    public var files: [URL]
     /// How many archive layers were removed.
     public let layers: Int
     /// True when a zip was left unopened because the layer limit was reached.
@@ -212,6 +212,48 @@ public struct Unpacker {
             if !fm.fileExists(atPath: candidate.path) { return candidate }
         }
         return url
+    }
+
+    /// Renames `files` to "<base>.<ext>" (one file) or "<base> (1).<ext>", "<base> (2).<ext>"… (several),
+    /// numbered in natural name order. Each file stays in its own folder. Returns the new URLs in numbering order.
+    public static func renameSequentially(_ files: [URL], base: String) throws -> [URL] {
+        let fm = FileManager.default
+        let clean = base.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+            .trimmingCharacters(in: .whitespaces)
+        guard !files.isEmpty, !clean.isEmpty else { return files }
+        let ordered = files.sorted {
+            let a = $0.lastPathComponent, b = $1.lastPathComponent
+            let c = a.localizedStandardCompare(b)
+            return c == .orderedSame ? $0.path < $1.path : c == .orderedAscending
+        }
+        // Move everything aside first so a new name can never collide with an old one.
+        var temps: [(original: URL, temp: URL)] = []
+        for f in ordered {
+            let t = f.deletingLastPathComponent()
+                .appendingPathComponent(".renaming-\(UUID().uuidString)" + (f.pathExtension.isEmpty ? "" : ".\(f.pathExtension)"))
+            do {
+                try fm.moveItem(at: f, to: t)
+            } catch {
+                for done in temps { try? fm.moveItem(at: done.temp, to: done.original) }
+                throw error
+            }
+            temps.append((f, t))
+        }
+        var result: [URL] = []
+        for (i, item) in temps.enumerated() {
+            let name = ordered.count == 1 ? clean : "\(clean) (\(i + 1))"
+            let ext = item.temp.pathExtension
+            let target = unique(item.temp.deletingLastPathComponent()
+                .appendingPathComponent(ext.isEmpty ? name : "\(name).\(ext)"))
+            do {
+                try fm.moveItem(at: item.temp, to: target)
+            } catch {
+                for rest in temps[i...] { try? fm.moveItem(at: rest.temp, to: unique(rest.original)) }
+                throw error
+            }
+            result.append(target)
+        }
+        return result
     }
 
     public static func files(in folder: URL) -> [URL] {

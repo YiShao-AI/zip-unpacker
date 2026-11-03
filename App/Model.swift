@@ -131,6 +131,7 @@ enum Prefs {
     static let globalKey = "format.global"
     static let quickPicksKey = "format.quickPicks"
     static let autoCopyKey = "export.autoCopy"
+    static let renameVideosKey = "names.videosAfterOriginal"
 
     static func load<T: Decodable>(_ type: T.Type, _ key: String) -> T? {
         guard let data = defaults.data(forKey: key) else { return nil }

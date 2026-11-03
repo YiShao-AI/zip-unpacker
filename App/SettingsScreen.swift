@@ -46,6 +46,14 @@ struct SettingsScreen: View {
                 }
 
                 Section {
+                    Toggle("Name videos after the original file", isOn: $library.renameVideos)
+                } header: {
+                    Text("Video names")
+                } footer: {
+                    Text("7月17日舞蹈.pdf gives 7月17日舞蹈.mp4, or 7月17日舞蹈 (1).mp4, (2)… when it holds several videos. Other files keep their names.")
+                }
+
+                Section {
                     Picker("After unpacking", selection: $library.deleteOriginals) {
                         Text("Keep originals").tag(false)
                         Text("Delete originals").tag(true)

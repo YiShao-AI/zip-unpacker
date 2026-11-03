@@ -45,6 +45,7 @@ final class Library: ObservableObject {
     @Published var useGlobalFormat = Prefs.bool(Prefs.globalKey, default: true) { didSet { Prefs.defaults.set(useGlobalFormat, forKey: Prefs.globalKey) } }
     @Published var quickPicks = Prefs.load([QuickPick].self, Prefs.quickPicksKey) ?? QuickPick.builtIn { didSet { Prefs.save(quickPicks, Prefs.quickPicksKey) } }
     @Published var autoCopy = Prefs.bool(Prefs.autoCopyKey, default: true) { didSet { Prefs.defaults.set(autoCopy, forKey: Prefs.autoCopyKey) } }
+    @Published var renameVideos = Prefs.bool(Prefs.renameVideosKey, default: true) { didSet { Prefs.defaults.set(renameVideos, forKey: Prefs.renameVideosKey) } }
     @Published var deleteOriginals = Prefs.defaults.bool(forKey: Prefs.deleteOriginalsKey) { didSet { Prefs.defaults.set(deleteOriginals, forKey: Prefs.deleteOriginalsKey) } }
 
     let fm = FileManager.default
@@ -236,6 +237,25 @@ final class Library: ObservableObject {
         say("Originals folder emptied.")
     }
 
+    /// For batches made before renaming existed: names the videos in each original's folder after that folder.
+    func renameVideos(inBatch batch: URL) {
+        let folders = ((try? fm.contentsOfDirectory(at: batch, includingPropertiesForKeys: [.isDirectoryKey],
+                                                    options: [.skipsHiddenFiles])) ?? [])
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        var count = 0, failed = 0
+        for folder in folders {
+            let videos = Unpacker.files(in: folder).filter(Media.isVideo)
+            guard !videos.isEmpty else { continue }
+            if (try? Unpacker.renameSequentially(videos, base: folder.lastPathComponent)) != nil { count += videos.count } else { failed += 1 }
+        }
+        refresh()
+        if failed > 0 {
+            notice = "Some videos couldn't be renamed. The rest were."
+        } else {
+            say(count == 0 ? "No videos to rename." : "Renamed \(plural(count, "video")) after their folders.")
+        }
+    }
+
     // MARK: Quick picks
 
     func saveQuickPick(_ format: UnpackFormat, name: String) {
@@ -334,7 +354,14 @@ final class Library: ObservableObject {
             }.value
 
             switch result {
-            case .success(let report):
+            case .success(var report):
+                if renameVideos {
+                    let videos = report.files.filter(Media.isVideo)
+                    let base = item.url.deletingPathExtension().lastPathComponent
+                    if !videos.isEmpty, let renamed = try? Unpacker.renameSequentially(videos, base: base) {
+                        report.files = report.files.filter { !Media.isVideo($0) } + renamed
+                    }
+                }
                 summary.succeeded.append(report)
                 errors[item.name] = nil
                 run?.items[i].status = .done(doneText(report, format: format))

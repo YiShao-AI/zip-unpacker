@@ -130,6 +130,50 @@ final class UnpackCoreTests: XCTestCase {
         XCTAssertEqual(lastFraction, 1, accuracy: 0.001)
     }
 
+    // MARK: Naming videos after the original
+
+    func touch(_ dir: URL, _ names: [String]) throws -> [URL] {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return try names.map { n in
+            let u = dir.appendingPathComponent(n)
+            try FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(n.utf8).write(to: u)
+            return u
+        }
+    }
+
+    func testRenameSingleFile() throws {
+        let files = try touch(out, ["a8f3e9c1d0.mp4"])
+        let renamed = try Unpacker.renameSequentially(files, base: "7月17日舞蹈")
+        XCTAssertEqual(renamed.map(\.lastPathComponent), ["7月17日舞蹈.mp4"])
+        XCTAssertEqual(try String(contentsOf: renamed[0]), "a8f3e9c1d0.mp4")
+    }
+
+    func testRenameSeveralInNaturalOrder() throws {
+        let files = try touch(out, ["clip_10.mp4", "clip_2.mp4", "clip_1.mov"])
+        let renamed = try Unpacker.renameSequentially(files, base: "7月17日舞蹈")
+        XCTAssertEqual(renamed.map(\.lastPathComponent), ["7月17日舞蹈 (1).mov", "7月17日舞蹈 (2).mp4", "7月17日舞蹈 (3).mp4"])
+        XCTAssertEqual(try renamed.map { try String(contentsOf: $0) }, ["clip_1.mov", "clip_2.mp4", "clip_10.mp4"])
+    }
+
+    func testRenameAvoidsCollisionsAndIsRepeatable() throws {
+        // One file already carries a target name; renaming twice gives the same result.
+        let files = try touch(out, ["x (2).mp4", "b.mp4", "a.mp4"])
+        let first = try Unpacker.renameSequentially(files, base: "x")
+        XCTAssertEqual(Set(first.map(\.lastPathComponent)), ["x (1).mp4", "x (2).mp4", "x (3).mp4"])
+        let second = try Unpacker.renameSequentially(first, base: "x")
+        XCTAssertEqual(second.map(\.lastPathComponent), ["x (1).mp4", "x (2).mp4", "x (3).mp4"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: out.path).sorted(),
+                       ["x (1).mp4", "x (2).mp4", "x (3).mp4"])
+    }
+
+    func testRenameKeepsFilesInTheirFolders() throws {
+        let files = try touch(out, ["sub/one.mp4", "two.mp4"])
+        let renamed = try Unpacker.renameSequentially(files, base: "d/a:y")
+        XCTAssertEqual(renamed.map { $0.deletingLastPathComponent().lastPathComponent }, ["sub", out.lastPathComponent])
+        XCTAssertEqual(renamed.map(\.lastPathComponent), ["d_a_y (1).mp4", "d_a_y (2).mp4"])
+    }
+
     // MARK: Other formats
 
     func testAES128Deflate() throws {
