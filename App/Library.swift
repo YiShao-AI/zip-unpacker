@@ -324,8 +324,9 @@ final class Library: ObservableObject {
                         let layer = p.layer, fraction = p.layerFraction
                         Task { @MainActor in
                             let lib = Library.shared
+                            // Show the deepest layer reached; the outer layer finishing afterwards isn't news.
                             guard let run = lib.run, run.items.indices.contains(i),
-                                  case .unpacking = run.items[i].status else { return }
+                                  case .unpacking(let shown, _) = run.items[i].status, layer >= shown else { return }
                             lib.run?.items[i].status = .unpacking(layer: layer, fraction: fraction)
                         }
                     })
