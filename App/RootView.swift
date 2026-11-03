@@ -46,6 +46,20 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: library.toast)
+        .overlay {
+            if let busy = library.busy {
+                ZStack {
+                    Color.black.opacity(0.25).ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text(busy).font(.headline)
+                        Text("Big videos can take a moment.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(24)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(.regularMaterial))
+                }
+            }
+        }
         .alert(library.notice ?? "", isPresented: Binding(get: { library.notice != nil },
                                                          set: { if !$0 { library.notice = nil } })) {
             Button("OK", role: .cancel) {}

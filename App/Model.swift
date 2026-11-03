@@ -288,4 +288,8 @@ func sizeText(_ bytes: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
 }
 
-func plural(_ n: Int, _ word: String) -> String { "\(n) \(word)\(n == 1 ? "" : "s")" }
+func plural(_ n: Int, _ word: String) -> String {
+    guard n != 1 else { return "1 \(word)" }
+    let es = ["ch", "sh", "s", "x"].contains { word.hasSuffix($0) }
+    return "\(n) \(word)\(es ? "es" : "s")"
+}

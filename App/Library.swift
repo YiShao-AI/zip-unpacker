@@ -249,6 +249,157 @@ final class Library: ObservableObject {
         say("Deleted “\(url.lastPathComponent)”.")
     }
 
+    // MARK: Organising batches
+
+    enum Destination: Equatable {
+        /// A batch: items keep their original's folder (a video from folder F goes into F there).
+        case batch(URL)
+        /// A folder inside a batch: items go straight in.
+        case folder(URL)
+    }
+
+    @Published private(set) var busy: String?
+
+    /// Copy / Cut, then Paste somewhere else.
+    struct Clipboard: Equatable {
+        var items: [URL]
+        var cut: Bool
+        var source: URL
+        var text: String { "\(plural(items.count, "item")) \(cut ? "cut" : "copied")" }
+    }
+    @Published var clipboard: Clipboard?
+
+    func copyToClipboard(_ items: [URL], from batch: URL, cut: Bool) {
+        guard !items.isEmpty else { return }
+        clipboard = Clipboard(items: items, cut: cut, source: batch)
+        say("\(cut ? "Cut" : "Copied") \(plural(items.count, "item")). Open a batch or folder and tap Paste.")
+    }
+
+    func paste(to destination: Destination) async {
+        guard let clip = clipboard else { return }
+        let existing = clip.items.filter { fm.fileExists(atPath: $0.path) }
+        guard !existing.isEmpty else {
+            clipboard = nil
+            notice = "The items on the clipboard aren't there any more."
+            return
+        }
+        await transfer(existing, from: clip.source, to: destination, move: clip.cut)
+        if clip.cut { clipboard = nil }
+    }
+
+    /// "Batch July dances" — the "Batch " prefix is what makes a folder show up in Results.
+    func batchFolderName(_ name: String) -> String? {
+        guard let n = FolderOps.cleanName(name) else { return nil }
+        return n.hasPrefix(Self.batchPrefix) ? n : Self.batchPrefix + n
+    }
+
+    @discardableResult
+    func createBatch(named name: String) -> URL? {
+        guard let n = batchFolderName(name) else { notice = "That name can't be used."; return nil }
+        do {
+            let url = try FolderOps.createFolder(named: n, in: docs)
+            refresh()
+            return url
+        } catch {
+            notice = error.localizedDescription
+            return nil
+        }
+    }
+
+    func createFolder(named name: String, in batch: URL) {
+        do {
+            let url = try FolderOps.createFolder(named: name, in: batch)
+            refresh()
+            say("Made the folder “\(url.lastPathComponent)”.")
+        } catch {
+            notice = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func rename(_ item: URL, to name: String) -> URL? {
+        let isBatch = item.deletingLastPathComponent().standardizedFileURL.path == docs.standardizedFileURL.path
+        let newName = isBatch ? batchFolderName(name) : FolderOps.cleanName(name)
+        guard let newName else { notice = "That name can't be used."; return nil }
+        do {
+            let url = try FolderOps.rename(item, to: newName)
+            refresh()
+            return url
+        } catch {
+            notice = error.localizedDescription
+            return nil
+        }
+    }
+
+    func delete(_ urls: [URL], inBatch batch: URL) {
+        for url in urls { try? fm.removeItem(at: url) }
+        FolderOps.removeEmptyFolders(in: batch)
+        refresh()
+        say("Deleted \(plural(urls.count, "item")).")
+    }
+
+    func deleteBatches(_ urls: [URL]) {
+        for url in urls { try? fm.removeItem(at: url) }
+        refresh()
+        say("Deleted \(plural(urls.count, "batch")).")
+    }
+
+    /// Moves or copies items picked inside `batch` to another place. Big copies run off the main thread.
+    func transfer(_ items: [URL], from batch: URL, to destination: Destination, move: Bool) async {
+        let batchPath = batch.standardizedFileURL.path
+        let plan: [(URL, URL)] = items.map { item in
+            switch destination {
+            case .folder(let f):
+                return (item, f)
+            case .batch(let b):
+                // A file inside an original's folder goes into the same-named folder in the target batch.
+                let parent = item.deletingLastPathComponent()
+                if parent.standardizedFileURL.path != batchPath { return (item, b.appendingPathComponent(parent.lastPathComponent)) }
+                return (item, b)
+            }
+        }
+        busy = move ? "Moving…" : "Copying…"
+        let failures = await Task.detached(priority: .userInitiated) { () -> [String] in
+            var failed: [String] = []
+            for (item, target) in plan {
+                do { try FolderOps.transfer(item, into: target, move: move) } catch {
+                    failed.append("\(item.lastPathComponent): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
+                }
+            }
+            if move { FolderOps.removeEmptyFolders(in: batch) }
+            return failed
+        }.value
+        busy = nil
+        refresh()
+        if failures.isEmpty {
+            say("\(move ? "Moved" : "Copied") \(plural(items.count, "item")).")
+        } else {
+            notice = "Some items couldn't be \(move ? "moved" : "copied"):\n" + failures.joined(separator: "\n")
+        }
+    }
+
+    /// Combines several batches into a new one. With `keepOld` the old batches stay as they are.
+    func merge(_ batches: [URL], named name: String, keepOld: Bool) async -> URL? {
+        guard let n = batchFolderName(name) else { notice = "That name can't be used."; return nil }
+        let target = Unpacker.unique(docs.appendingPathComponent(n, isDirectory: true))
+        let formats = Set(batches.compactMap { BatchInfo.load($0).format })
+        busy = keepOld ? "Copying…" : "Merging…"
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<URL, Error> in
+            Result { try FolderOps.merge(batches, into: target, move: !keepOld) }
+        }.value
+        busy = nil
+        BatchInfo(format: formats.count == 1 ? formats.first : "Merged from \(plural(batches.count, "batch"))").save(target)
+        refresh()
+        switch result {
+        case .success(let url):
+            say("Merged \(plural(batches.count, "batch")) into “\(url.lastPathComponent)”.")
+            return url
+        case .failure(let error):
+            notice = "Merge stopped: \(error.localizedDescription) Nothing was deleted that wasn't copied."
+            return nil
+        }
+    }
+
     func clearOriginals() {
         for url in (try? fm.contentsOfDirectory(at: originalsDir, includingPropertiesForKeys: nil)) ?? [] {
             try? fm.removeItem(at: url)
