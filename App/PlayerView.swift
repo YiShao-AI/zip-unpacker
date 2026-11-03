@@ -8,7 +8,6 @@ struct PlayerView: View {
     @State private var index: Int
     @State private var share: ShareItems?
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var pool = PlayerPool()
 
     init(items: [URL], start: Int) {
         self.items = items
@@ -34,20 +33,15 @@ struct PlayerView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
 
-            TabView(selection: $index) {
-                ForEach(items.indices, id: \.self) { i in
-                    page(i).tag(i)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
+            VideoPager(items: items, index: $index) { url in share = ShareItems(urls: [url]) }
 
             HStack {
-                Button { withAnimation { index -= 1 } } label: { Label("Previous", systemImage: "chevron.left") }
+                Button { index -= 1 } label: { Label("Previous", systemImage: "chevron.left") }
                     .disabled(index == 0)
                 Spacer()
                 Text("Swipe for next or previous").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button { withAnimation { index += 1 } } label: {
+                Button { index += 1 } label: {
                     HStack(spacing: 4) { Text("Next"); Image(systemName: "chevron.right") }
                 }
                 .disabled(index >= items.count - 1)
@@ -61,79 +55,179 @@ struct PlayerView: View {
         .tint(.white)
         .onAppear {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-            pool.activate(index, items: items)
         }
-        .onChange(of: index) { pool.activate($0, items: items) }
-        .onDisappear { pool.stopAll() }
         .sheet(item: $share) { ActivityView(items: $0.urls) }
     }
+}
 
-    @ViewBuilder
-    private func page(_ i: Int) -> some View {
-        if let player = pool.players[i] {
-            PlayerController(player: player)
-        } else if !Media.isPlayable(items[i]) {
-            VStack(spacing: 14) {
-                Image(systemName: "film").font(.system(size: 44)).foregroundStyle(.secondary)
-                Text("Unpacker can't play .\(items[i].pathExtension) videos.")
-                Button("Open in another app") { share = ShareItems(urls: [items[i]]) }
-                    .buttonStyle(.bordered)
+/// UIKit page controller: the slide always finishes before the next video starts, like Photos.
+struct VideoPager: UIViewControllerRepresentable {
+    let items: [URL]
+    @Binding var index: Int
+    let onShare: (URL) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(items: items) }
+
+    func makeUIViewController(context: Context) -> UIPageViewController {
+        let pager = UIPageViewController(transitionStyle: .scroll, navigationOrientation: .horizontal,
+                                         options: [.interPageSpacing: 16])
+        pager.view.backgroundColor = .black
+        pager.dataSource = context.coordinator
+        pager.delegate = context.coordinator
+        context.coordinator.parent = self
+        pager.setViewControllers([context.coordinator.page(index)], direction: .forward, animated: false)
+        context.coordinator.didShow(index)
+        return pager
+    }
+
+    func updateUIViewController(_ pager: UIPageViewController, context: Context) {
+        let c = context.coordinator
+        c.parent = self
+        // Previous/Next buttons: slide to the new page, then start it.
+        guard !c.transitioning, c.shown != index, items.indices.contains(index) else { return }
+        let target = index
+        c.transitioning = true
+        pager.setViewControllers([c.page(target)], direction: target > c.shown ? .forward : .reverse, animated: true) { _ in
+            c.transitioning = false
+            c.didShow(target)
+            if c.parent.index != target { c.parent.index = target }
+        }
+    }
+
+    static func dismantleUIViewController(_ pager: UIPageViewController, coordinator: Coordinator) {
+        coordinator.stopAll()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+        var parent: VideoPager?
+        let items: [URL]
+        private var pages: [Int: VideoPage] = [:]
+        var shown = -1
+        var transitioning = false
+
+        init(items: [URL]) { self.items = items }
+
+        func page(_ i: Int) -> VideoPage {
+            if let p = pages[i] { return p }
+            let p = VideoPage(index: i, url: items[i]) { [weak self] url in self?.parent?.onShare(url) }
+            pages[i] = p
+            return p
+        }
+
+        /// Plays the page now on screen from the start, pauses the rest, keeps only its neighbours loaded.
+        func didShow(_ i: Int) {
+            shown = i
+            for (k, p) in pages where abs(k - i) > 1 {
+                p.release()
+                pages[k] = nil
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            for k in [i - 1, i + 1] where items.indices.contains(k) { page(k).loadViewIfNeeded() }
+            for (k, p) in pages {
+                if k == i { p.playFromStart() } else { p.pause() }
+            }
+        }
+
+        func stopAll() {
+            pages.values.forEach { $0.release() }
+            pages = [:]
+        }
+
+        func pageViewController(_ pvc: UIPageViewController, viewControllerBefore vc: UIViewController) -> UIViewController? {
+            guard let p = vc as? VideoPage, p.index > 0 else { return nil }
+            return page(p.index - 1)
+        }
+
+        func pageViewController(_ pvc: UIPageViewController, viewControllerAfter vc: UIViewController) -> UIViewController? {
+            guard let p = vc as? VideoPage, p.index < items.count - 1 else { return nil }
+            return page(p.index + 1)
+        }
+
+        func pageViewController(_ pvc: UIPageViewController, willTransitionTo pending: [UIViewController]) {
+            transitioning = true
+        }
+
+        func pageViewController(_ pvc: UIPageViewController, didFinishAnimating finished: Bool,
+                                previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
+            transitioning = false
+            guard let p = pvc.viewControllers?.first as? VideoPage else { return }
+            if p.index != shown { didShow(p.index) }
+            if parent?.index != p.index { parent?.index = p.index }
+        }
+    }
+}
+
+/// One video: the standard iOS player (scrubber, ±15 s, AirPlay, Picture in Picture), or a note for formats iOS can't play.
+final class VideoPage: UIViewController {
+    let index: Int
+    let url: URL
+    private let onShare: (URL) -> Void
+    private var playerVC: AVPlayerViewController?
+
+    init(index: Int, url: URL, onShare: @escaping (URL) -> Void) {
+        self.index = index
+        self.url = url
+        self.onShare = onShare
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        let child: UIViewController
+        if Media.isPlayable(url) {
+            let pv = AVPlayerViewController()
+            let player = AVPlayer(url: url)
+            player.actionAtItemEnd = .pause
+            pv.player = player
+            pv.allowsPictureInPicturePlayback = true
+            pv.entersFullScreenWhenPlaybackBegins = false
+            pv.exitsFullScreenWhenPlaybackEnds = false
+            pv.view.backgroundColor = .black
+            playerVC = pv
+            child = pv
         } else {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            let url = url, onShare = onShare
+            let note = UIHostingController(rootView: UnplayableNote(ext: url.pathExtension) { onShare(url) })
+            note.view.backgroundColor = .black
+            child = note
         }
+        addChild(child)
+        child.view.frame = view.bounds
+        child.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(child.view)
+        child.didMove(toParent: self)
+    }
+
+    func playFromStart() {
+        loadViewIfNeeded()
+        guard let player = playerVC?.player else { return }
+        player.seek(to: .zero)
+        player.play()
+    }
+
+    func pause() { playerVC?.player?.pause() }
+
+    func release() {
+        pause()
+        playerVC?.player = nil
     }
 }
 
-/// Keeps players for the current video and its neighbours, so a swipe starts playing straight away.
-@MainActor
-final class PlayerPool: ObservableObject {
-    private(set) var players: [Int: AVPlayer] = [:]
-    private var current: Int?
+struct UnplayableNote: View {
+    let ext: String
+    let share: () -> Void
 
-    func activate(_ index: Int, items: [URL]) {
-        let keep = Set([index - 1, index, index + 1].filter { items.indices.contains($0) })
-        for (i, p) in players where !keep.contains(i) {
-            p.pause()
-            players[i] = nil
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "film").font(.system(size: 44)).foregroundStyle(.secondary)
+            Text("Unpacker can't play .\(ext) videos.").foregroundStyle(.white)
+            Button("Open in another app", action: share).buttonStyle(.bordered).tint(.white)
         }
-        for i in keep where players[i] == nil && Media.isPlayable(items[i]) {
-            let p = AVPlayer(url: items[i])
-            p.actionAtItemEnd = .pause
-            players[i] = p
-        }
-        for (i, p) in players where i != index { p.pause() }
-        if current != index, let p = players[index] {
-            p.seek(to: .zero)
-            p.play()
-        }
-        current = index
-        objectWillChange.send()
-    }
-
-    func stopAll() {
-        players.values.forEach { $0.pause() }
-        players = [:]
-        current = nil
-    }
-}
-
-/// The standard iOS player: scrubber, ±15 s, AirPlay, Picture in Picture.
-struct PlayerController: UIViewControllerRepresentable {
-    let player: AVPlayer
-
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let vc = AVPlayerViewController()
-        vc.player = player
-        vc.allowsPictureInPicturePlayback = true
-        vc.entersFullScreenWhenPlaybackBegins = false
-        vc.exitsFullScreenWhenPlaybackEnds = false
-        vc.view.backgroundColor = .black
-        return vc
-    }
-
-    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
-        if vc.player !== player { vc.player = player }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+        .preferredColorScheme(.dark)
     }
 }
