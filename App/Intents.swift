@@ -5,7 +5,7 @@ import Foundation
 /// so a shortcut can continue with e.g. "Save to Photo Album" or "Save File".
 struct UnpackInboxIntent: AppIntent {
     static var title: LocalizedStringResource = "Unpack Inbox"
-    static var description = IntentDescription("Unpacks every file waiting in Unpacker and returns the unpacked files.")
+    static var description = IntentDescription("Unpacks every file waiting in Unpacker with the default format and returns the unpacked files.")
     static var openAppWhenRun: Bool = true
 
     @MainActor

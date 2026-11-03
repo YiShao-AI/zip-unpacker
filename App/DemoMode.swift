@@ -3,7 +3,7 @@ import UnpackCore
 
 /// Launch arguments used by CI to screenshot each screen in the Simulator:
 ///   -UnpackerDemo YES          fill the app with sample files (fake data, no real archives)
-///   -UnpackerScreen <name>     open on inbox | progress | results | batch | settings
+///   -UnpackerScreen <name>     inbox | select | sheet | progress | results | batch | player | settings
 /// Launch arguments land in UserDefaults' argument domain, so nothing here persists.
 enum DemoMode {
     static var isOn: Bool { UserDefaults.standard.bool(forKey: "UnpackerDemo") }
@@ -25,19 +25,40 @@ enum DemoMode {
         for (i, name) in inboxNames.enumerated() {
             try? blob(300 + i * 40).write(to: library.pendingDir.appendingPathComponent(name))
         }
-        for (batch, originals) in [("Batch 2026-11-03 14-30", ["7月13日舞蹈", "7月14日舞蹈"]),
-                                   ("Batch 2026-11-02 21-05", ["7月15日舞蹈", "7月16日舞蹈"])] {
+        let batches: [(String, [String], String?)] = [
+            ("Batch 2026-11-03 14-30", ["7月13日舞蹈", "7月14日舞蹈"], "Unzip"),
+            ("Batch 2026-11-02 21-05", ["7月15日舞蹈", "7月16日舞蹈"], nil),
+        ]
+        for (batch, originals, exported) in batches {
+            let folder = docs.appendingPathComponent(batch)
             for o in originals {
-                let dir = docs.appendingPathComponent(batch).appendingPathComponent(o)
+                let dir = folder.appendingPathComponent(o)
                 try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
                 for (f, kb) in [("\(o).mp4", 900), ("video_output_00001-audio_22.mp4", 450), ("video_output_00001-audio_23.mp4", 420)] {
                     try? blob(kb).write(to: dir.appendingPathComponent(f))
                 }
             }
+            BatchInfo(format: UnpackFormat.standard.summary, exportedTo: exported,
+                      exportedAt: exported == nil ? nil : Date(timeIntervalSinceNow: -3600)).save(folder)
         }
-        UserDefaults.standard.set("123", forKey: Settings.passwordsKey)
+        library.defaultFormat = .standard
+        library.quickPicks = QuickPick.builtIn
+        library.useGlobalFormat = screen != "sheet"
+        library.autoCopy = true
         ExportDestination.setDemoName("Unzip")
         library.refresh()
-        if screen == "progress" { library.showDemoProgress() }
+        if screen == "progress" { library.showDemoRun() }
+    }
+
+    @MainActor
+    static func route(nav: AppNav, library: Library) async {
+        guard isOn else { return }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        switch screen {
+        case "results": nav.tab = .results
+        case "batch", "player": if let first = library.batches.first { nav.open(first) }
+        case "settings": nav.tab = .settings
+        default: break
+        }
     }
 }

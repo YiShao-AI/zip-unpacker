@@ -81,8 +81,53 @@ final class UnpackCoreTests: XCTestCase {
 
     func testProgressReported() throws {
         var last: Int64 = 0
-        _ = try Unpacker(passwords: ["test-pw"]).unpack(fixture("nested.pdf"), into: out) { last = $0 }
+        _ = try Unpacker(passwords: ["test-pw"]).unpack(fixture("nested.pdf"), into: out, progress: { last = $0 })
         XCTAssertGreaterThan(last, 100_000)
+    }
+
+    // MARK: Unpack format: layer limit and per-layer passwords
+
+    func testLayerLimitKeepsInnerZip() throws {
+        let report = try Unpacker(passwords: ["test-pw"], layerLimit: 1).unpack(fixture("nested.pdf"), into: out)
+        XCTAssertEqual(report.layers, 1)
+        XCTAssertTrue(report.stoppedAtLimit)
+        XCTAssertEqual(report.files.map(\.lastPathComponent), ["内层.pdf"])
+        XCTAssertEqual(ArchiveKind.detect(report.files[0]), .zip)
+    }
+
+    func testLayerLimitAboveRealDepth() throws {
+        let report = try Unpacker(passwords: ["test-pw"], layerLimit: 3).unpack(fixture("nested.pdf"), into: out)
+        XCTAssertEqual(report.layers, 2)
+        XCTAssertFalse(report.stoppedAtLimit)
+        XCTAssertEqual(try contents(report), try expected("nested"))
+    }
+
+    func testPerLayerPasswords() throws {
+        let u = Unpacker(passwords: [], layerPasswords: [["x", "test-pw"], ["test-pw"]], layerLimit: 2)
+        let report = try u.unpack(fixture("nested.pdf"), into: out)
+        XCTAssertEqual(try contents(report), try expected("nested"))
+    }
+
+    func testPerLayerWrongPasswordNamesLayer() throws {
+        let failure = Unpacker.FailureInfo()
+        let u = Unpacker(passwords: ["test-pw"], layerPasswords: [["test-pw"], ["nope"]], layerLimit: 2)
+        XCTAssertThrowsError(try u.unpack(fixture("nested.pdf"), into: out, failure: failure)) {
+            XCTAssertEqual($0 as? UnpackError, .wrongPassword)
+        }
+        XCTAssertEqual(failure.layer, 2)
+        XCTAssertEqual(u.passwords(forLayer: 2), ["nope"])
+        XCTAssertEqual(u.passwords(forLayer: 5), ["nope"])
+    }
+
+    func testLayerProgressReported() throws {
+        var seen = Set<Int>()
+        var lastFraction = 0.0
+        _ = try Unpacker(passwords: ["test-pw"]).unpack(fixture("nested.pdf"), into: out, onProgress: {
+            seen.insert($0.layer)
+            if $0.layer == 2 { lastFraction = $0.layerFraction }
+        })
+        XCTAssertEqual(seen, [1, 2])
+        XCTAssertEqual(lastFraction, 1, accuracy: 0.001)
     }
 
     // MARK: Other formats

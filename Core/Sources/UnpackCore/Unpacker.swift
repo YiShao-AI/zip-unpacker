@@ -23,11 +23,32 @@ public struct UnpackReport {
     public let files: [URL]
     /// How many archive layers were removed.
     public let layers: Int
+    /// True when a zip was left unopened because the layer limit was reached.
+    public var stoppedAtLimit = false
+}
+
+/// Progress inside one archive layer.
+public struct UnpackProgress {
+    /// 1 = the downloaded file, 2 = a zip inside it, …
+    public let layer: Int
+    /// Bytes written so far for the archive being extracted at `layer`.
+    public let layerBytes: Int64
+    /// Uncompressed size of that archive.
+    public let layerTotal: Int64
+    /// Bytes written so far for the whole file, all layers.
+    public let totalBytes: Int64
+
+    public var layerFraction: Double { layerTotal > 0 ? min(Double(layerBytes) / Double(layerTotal), 1) : 0 }
 }
 
 /// Removes every archive layer from a file and leaves the final contents in one folder.
 public struct Unpacker {
+    /// Tried in order on every layer (unless `layerPasswords` is set).
     public var passwords: [String]
+    /// When set, layer n tries only `layerPasswords[n - 1]` (empty = no password). Layers past the end use the last entry.
+    public var layerPasswords: [[String]]?
+    /// Open exactly this many layers; anything still zipped after that is kept as a file. nil = automatic (up to `maxDepth`).
+    public var layerLimit: Int?
     /// Archives nested deeper than this are left as files.
     public var maxDepth = 6
     public var chunkSize = 1 << 20
@@ -38,13 +59,32 @@ public struct Unpacker {
         "jar", "pages", "numbers", "key", "kmz", "usdz", "xpi", "aar", "vsix", "3mf", "sketch",
     ]
 
-    public init(passwords: [String]) { self.passwords = passwords }
+    public init(passwords: [String], layerPasswords: [[String]]? = nil, layerLimit: Int? = nil) {
+        self.passwords = passwords
+        self.layerPasswords = layerPasswords
+        self.layerLimit = layerLimit
+    }
+
+    var depthLimit: Int { min(max(layerLimit ?? maxDepth, 1), maxDepth) }
+
+    /// The passwords tried on `layer` (1-based).
+    public func passwords(forLayer layer: Int) -> [String] {
+        guard let lp = layerPasswords, !lp.isEmpty else { return passwords }
+        return lp[min(layer - 1, lp.count - 1)]
+    }
+
+    /// Reports the layer whose archive failed, alongside the error thrown by `unpack`.
+    public final class FailureInfo { public internal(set) var layer = 1; public init() {} }
 
     /// - Parameters:
     ///   - input: the downloaded file (any extension).
     ///   - outputRoot: the folder that receives a new sub-folder named after `input`.
     ///   - progress: called with the cumulative number of bytes processed.
+    ///   - onProgress: called with per-layer progress.
+    ///   - failure: if given, holds the layer that was being opened when an error was thrown.
     public func unpack(_ input: URL, into outputRoot: URL,
+                       failure: FailureInfo? = nil,
+                       onProgress: ((UnpackProgress) -> Void)? = nil,
                        progress: ((Int64) -> Void)? = nil) throws -> UnpackReport {
         switch ArchiveKind.detect(input) {
         case .zip: break
@@ -59,29 +99,47 @@ public struct Unpacker {
         try fm.createDirectory(at: stage, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: work) }
 
-        var done: Int64 = 0
-        let tick: (Int) -> Void = { n in
-            done += Int64(n)
-            progress?(done)
-        }
-        var layers = 0
-        try extractAll(input, into: stage, depth: 1, layers: &layers, tick: tick)
+        let state = RunState(failure: failure ?? FailureInfo(), onProgress: onProgress, progress: progress)
+        try extractAll(input, into: stage, depth: 1, state: state)
 
         let content = Self.collapse(stage)
         try fm.createDirectory(at: outputRoot, withIntermediateDirectories: true)
         let folder = Self.unique(outputRoot.appendingPathComponent(input.deletingPathExtension().lastPathComponent,
                                                                    isDirectory: true))
         try fm.moveItem(at: content, to: folder)
-        return UnpackReport(folder: folder, files: Self.files(in: folder), layers: layers)
+        var report = UnpackReport(folder: folder, files: Self.files(in: folder), layers: state.layers)
+        report.stoppedAtLimit = state.stoppedAtLimit
+        return report
     }
 
-    private func extractAll(_ archiveURL: URL, into dest: URL, depth: Int, layers: inout Int,
-                            tick: @escaping (Int) -> Void) throws {
-        layers = max(layers, depth)
+    final class RunState {
+        let failure: FailureInfo
+        let onProgress: ((UnpackProgress) -> Void)?
+        let progress: ((Int64) -> Void)?
+        var layers = 0
+        var total: Int64 = 0
+        var stoppedAtLimit = false
+        init(failure: FailureInfo, onProgress: ((UnpackProgress) -> Void)?, progress: ((Int64) -> Void)?) {
+            self.failure = failure; self.onProgress = onProgress; self.progress = progress
+        }
+    }
+
+    private func extractAll(_ archiveURL: URL, into dest: URL, depth: Int, state: RunState) throws {
+        state.layers = max(state.layers, depth)
+        state.failure.layer = depth
         let fm = FileManager.default
         let zip = try ZipArchive(url: archiveURL)
         zip.chunkSize = chunkSize
-        let password = try choosePassword(for: zip)
+        let password = try choosePassword(for: zip, layer: depth)
+        let layerTotal = zip.entries.reduce(Int64(0)) { $0 + Int64(clamping: $1.uncompressedSize) }
+        var layerBytes: Int64 = 0
+        let tick: (Int) -> Void = { n in
+            layerBytes += Int64(n)
+            state.total += Int64(n)
+            state.progress?(state.total)
+            state.onProgress?(UnpackProgress(layer: depth, layerBytes: layerBytes, layerTotal: layerTotal,
+                                             totalBytes: state.total))
+        }
 
         for entry in zip.entries {
             guard let parts = entry.safeComponents, parts.first != "__MACOSX", parts.last != ".DS_Store" else { continue }
@@ -91,14 +149,19 @@ public struct Unpacker {
                 continue
             }
             try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            state.failure.layer = depth
             try zip.extract(entry, to: target, password: password, progress: tick)
 
-            guard depth < maxDepth,
-                  !Self.zipBasedDocuments.contains(target.pathExtension.lowercased()) else { continue }
-            switch ArchiveKind.detect(target) {
+            guard !Self.zipBasedDocuments.contains(target.pathExtension.lowercased()) else { continue }
+            let kind = ArchiveKind.detect(target)
+            guard depth < depthLimit else {
+                if kind == .zip { state.stoppedAtLimit = true }
+                continue
+            }
+            switch kind {
             case .zip:
                 let sub = Self.unique(target.deletingPathExtension())
-                try extractAll(target, into: sub, depth: depth + 1, layers: &layers, tick: tick)
+                try extractAll(target, into: sub, depth: depth + 1, state: state)
                 try fm.removeItem(at: target)
             case .sevenZip: throw UnpackError.unsupportedArchive("7z (inner layer)")
             case .rar: throw UnpackError.unsupportedArchive("RAR (inner layer)")
@@ -107,11 +170,12 @@ public struct Unpacker {
         }
     }
 
-    /// Picks the first saved password that opens the archive's first encrypted file.
-    private func choosePassword(for zip: ZipArchive) throws -> String? {
+    /// Picks the first password for this layer that opens the archive's first encrypted file.
+    private func choosePassword(for zip: ZipArchive, layer: Int) throws -> String? {
         guard let probe = zip.entries.first(where: { $0.isEncrypted && !$0.isDirectory }) else { return nil }
-        guard !passwords.isEmpty else { throw UnpackError.passwordRequired }
-        for pw in passwords where zip.accepts(password: pw, for: probe) { return pw }
+        let candidates = passwords(forLayer: layer).filter { !$0.isEmpty }
+        guard !candidates.isEmpty else { throw UnpackError.passwordRequired }
+        for pw in candidates where zip.accepts(password: pw, for: probe) { return pw }
         throw UnpackError.wrongPassword
     }
 

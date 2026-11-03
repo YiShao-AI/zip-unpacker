@@ -7,13 +7,16 @@ struct UnpackerApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
                 .environmentObject(library)
-                .onOpenURL { library.importFile($0) }
+                .onOpenURL { url in
+                    library.importFile(url)
+                    library.say("Added “\(url.lastPathComponent)” to the Inbox.")
+                }
                 .task { DemoMode.seed(library) }
         }
         .onChange(of: scenePhase) { phase in
-            if phase == .active && !DemoMode.isOn { library.prepare() }
+            if phase == .active && !DemoMode.isOn && !library.isRunning { library.prepare() }
         }
     }
 }

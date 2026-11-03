@@ -9,7 +9,7 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.0"
+    MARKETING_VERSION: "1.1"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   Unpacker:
@@ -34,7 +34,9 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
-        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # Picture in Picture and audio that keeps playing when the screen locks
+        UIBackgroundModes: [audio]
         # Show Documents/ in the Files app (On My iPhone › Unpacker)
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
