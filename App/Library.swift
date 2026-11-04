@@ -66,6 +66,7 @@ final class Library: ObservableObject {
             try? fm.createDirectory(at: d, withIntermediateDirectories: true)
         }
         sweepSystemInbox()
+        flattenPending()
         refresh()
     }
 
@@ -121,6 +122,24 @@ final class Library: ObservableObject {
         }
     }
 
+    /// A folder shared from another app lands in To Unpack as a folder, but the Inbox lists files only,
+    /// so its files are moved up to the top level (sub-folders included) and the empty folder removed.
+    @discardableResult
+    private func flattenPending() -> Int {
+        let dirs = ((try? fm.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: [.isDirectoryKey],
+                                                 options: [.skipsHiddenFiles])) ?? [])
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        var moved = 0
+        for dir in dirs {
+            for file in Unpacker.files(in: dir) {
+                let dest = Unpacker.unique(pendingDir.appendingPathComponent(file.lastPathComponent))
+                if (try? fm.moveItem(at: file, to: dest)) != nil { moved += 1 }
+            }
+            if Unpacker.files(in: dir).isEmpty { try? fm.removeItem(at: dir) }
+        }
+        return moved
+    }
+
     /// Copies one file into To Unpack. `url` may be security-scoped (Files picker) or a provider file.
     @discardableResult
     private func copyIn(_ url: URL) -> Bool {
@@ -135,8 +154,11 @@ final class Library: ObservableObject {
         return ok
     }
 
-    /// Handles a file handed over by another app (Open in / Share) or picked in the Files importer.
-    func importFile(_ url: URL) {
+    /// Handles a file or folder handed over by another app (Open in / Share) or picked in the Files importer.
+    /// Returns how many files were added (a folder counts each file inside it).
+    @discardableResult
+    func importFile(_ url: URL) -> Int {
+        let before = Set(fileNames(pendingDir))
         if url.standardizedFileURL.path.hasPrefix(systemInbox.standardizedFileURL.path) {
             sweepSystemInbox()
         } else {
@@ -144,12 +166,18 @@ final class Library: ObservableObject {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             copyIn(url)
         }
+        flattenPending()
         refresh()
+        return Set(fileNames(pendingDir)).subtracting(before).count
+    }
+
+    private func fileNames(_ dir: URL) -> [String] {
+        ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).filter { !$0.hasPrefix(".") }
     }
 
     func importFiles(_ urls: [URL]) {
-        urls.forEach(importFile)
-        say("Added \(plural(urls.count, "file")) from Files.")
+        let added = urls.reduce(0) { $0 + importFile($1) }
+        say("Added \(plural(added, "file")) from Files.")
     }
 
     /// Adds every file inside a picked folder (and its sub-folders).

@@ -10,8 +10,13 @@ struct UnpackerApp: App {
             RootView()
                 .environmentObject(library)
                 .onOpenURL { url in
-                    library.importFile(url)
-                    library.say("Added “\(url.lastPathComponent)” to the Inbox.")
+                    let added = library.importFile(url)
+                    if url.hasDirectoryPath || added > 1 {
+                        library.say(added == 0 ? "No files found in “\(url.lastPathComponent)”."
+                                               : "Added \(plural(added, "file")) from folder “\(url.lastPathComponent)”.")
+                    } else {
+                        library.say("Added “\(url.lastPathComponent)” to the Inbox.")
+                    }
                 }
                 .task { DemoMode.seed(library) }
         }
