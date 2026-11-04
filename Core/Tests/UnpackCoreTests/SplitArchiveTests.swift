@@ -90,19 +90,31 @@ extension SplitArchiveTests {
     /// Writes a stored, unencrypted zip holding `files` (name → data). Enough for the reader under test.
     func storedZip(_ files: [(String, Data)], to url: URL) throws {
         var out = Data(), central = Data()
-        func le16(_ v: Int) -> Data { withUnsafeBytes(of: UInt16(v).littleEndian) { Data($0) } }
-        func le32(_ v: UInt32) -> Data { withUnsafeBytes(of: v.littleEndian) { Data($0) } }
+        func put16(_ d: inout Data, _ v: Int) { var x = UInt16(v).littleEndian; withUnsafeBytes(of: &x) { d.append(contentsOf: $0) } }
+        func put32(_ d: inout Data, _ v: UInt32) { var x = v.littleEndian; withUnsafeBytes(of: &x) { d.append(contentsOf: $0) } }
         for (name, data) in files {
-            let n = Data(name.utf8), crc = crc32(data), offset = UInt32(out.count)
-            out += le32(0x04034b50) + le16(20) + le16(0x800) + le16(0) + le16(0) + le16(0) + le32(crc)
-                + le32(UInt32(data.count)) + le32(UInt32(data.count)) + le16(n.count) + le16(0) + n + data
-            central += le32(0x02014b50) + le16(20) + le16(20) + le16(0x800) + le16(0) + le16(0) + le16(0) + le32(crc)
-                + le32(UInt32(data.count)) + le32(UInt32(data.count)) + le16(n.count) + le16(0) + le16(0) + le16(0)
-                + le16(0) + le32(0) + le32(offset) + n
+            let n = Data(name.utf8)
+            let crc = crc32(data)
+            let offset = UInt32(out.count)
+            let size = UInt32(data.count)
+            put32(&out, 0x04034b50)
+            for v in [20, 0x800, 0, 0, 0] { put16(&out, v) }
+            put32(&out, crc); put32(&out, size); put32(&out, size)
+            put16(&out, n.count); put16(&out, 0)
+            out.append(n); out.append(data)
+
+            put32(&central, 0x02014b50)
+            for v in [20, 20, 0x800, 0, 0, 0] { put16(&central, v) }
+            put32(&central, crc); put32(&central, size); put32(&central, size)
+            for v in [n.count, 0, 0, 0, 0] { put16(&central, v) }
+            put32(&central, 0); put32(&central, offset)
+            central.append(n)
         }
         let cdOffset = UInt32(out.count)
-        out += central + le32(0x06054b50) + le16(0) + le16(0) + le16(files.count) + le16(files.count)
-            + le32(UInt32(central.count)) + le32(cdOffset) + le16(0)
+        out.append(central)
+        put32(&out, 0x06054b50)
+        for v in [0, 0, files.count, files.count] { put16(&out, v) }
+        put32(&out, UInt32(central.count)); put32(&out, cdOffset); put16(&out, 0)
         try out.write(to: url)
     }
 
