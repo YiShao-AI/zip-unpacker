@@ -156,7 +156,8 @@ extension SplitArchiveTests {
         let out = dir.appendingPathComponent("out")
         let report = try Unpacker(passwords: ["test-pw"]).unpack(src, into: out)
         XCTAssertEqual(report.folder.lastPathComponent, "My folder")
-        let names = report.files.map { $0.path.replacingOccurrences(of: report.folder.path + "/", with: "") }
+        let base = report.folder.standardizedFileURL.resolvingSymlinksInPath().path + "/"
+        let names = report.files.map { $0.standardizedFileURL.resolvingSymlinksInPath().path.replacingOccurrences(of: base, with: "") }
         XCTAssertTrue(names.contains("clip.mp4"))
         XCTAssertTrue(names.contains("bad.zip"))
         XCTAssertTrue(names.contains { $0.hasPrefix("sub/a/") })
