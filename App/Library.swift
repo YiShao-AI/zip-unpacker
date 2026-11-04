@@ -65,13 +65,16 @@ final class Library: ObservableObject {
         for d in [pendingDir, originalsDir] {
             try? fm.createDirectory(at: d, withIntermediateDirectories: true)
         }
+        if joining.isEmpty { try? fm.removeItem(at: pendingDir.appendingPathComponent(".joining")) }
         sweepSystemInbox()
         flattenPending()
         refresh()
     }
 
     func refresh() {
-        pending = list(pendingDir).filter { !$0.isDirectory }
+        let files = list(pendingDir).filter { !$0.isDirectory }
+        let splitSets = SplitArchive.sets(in: files.map(\.url))
+        pending = files.filter { !joining.contains($0.name) }
         batches = list(docs)
             .filter { $0.isDirectory && $0.name.hasPrefix(Self.batchPrefix) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedDescending }
@@ -85,6 +88,54 @@ final class Library: ObservableObject {
         exportName = ExportDestination.name
         let names = Set(pending.map(\.name))
         errors = errors.filter { names.contains($0.key) }
+        for set in splitSets {
+            if set.isComplete {
+                joinParts(set)
+            } else if let message = SplitArchive.message(for: set) {
+                for part in set.parts { errors[part.lastPathComponent] = message }
+            }
+        }
+    }
+
+    // MARK: Split zips (name.zip.001, .002, …)
+
+    /// Part names being joined right now; hidden from the Inbox until the joined zip appears.
+    private var joining: Set<String> = []
+
+    /// Joins a complete set of parts into one zip in To Unpack, off the main thread, then removes the parts.
+    private func joinParts(_ set: SplitArchive.PartSet) {
+        let names = set.parts.map(\.lastPathComponent)
+        guard joining.isDisjoint(with: names) else { return }
+        joining.formUnion(names)
+        pending.removeAll { names.contains($0.name) }
+        say("Joining \(plural(set.parts.count, "part")) of “\(set.name)”…")
+        let work = pendingDir.appendingPathComponent(".joining", isDirectory: true)
+        let parts = set.parts
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<URL, Error> in
+                Result {
+                    try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+                    let tmp = Unpacker.unique(work.appendingPathComponent(set.name))
+                    try SplitArchive.join(parts, to: tmp)
+                    return tmp
+                }
+            }.value
+            joining.subtract(names)
+            switch result {
+            case .success(let tmp):
+                do {
+                    try fm.moveItem(at: tmp, to: Unpacker.unique(pendingDir.appendingPathComponent(set.name)))
+                    for part in parts { try? fm.removeItem(at: part) }
+                    say("Joined \(plural(parts.count, "part")) into “\(set.name)”.")
+                } catch {
+                    try? fm.removeItem(at: tmp)
+                    notice = "Couldn't join “\(set.name)”: \(error.localizedDescription)"
+                }
+            case .failure(let error):
+                notice = "Couldn't join “\(set.name)”: \(error.localizedDescription)"
+            }
+            refresh()
+        }
     }
 
     private func list(_ dir: URL) -> [FileItem] {
