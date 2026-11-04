@@ -131,8 +131,10 @@ extension SplitArchiveTests {
     func testSplitPartsInsideAZipAreJoinedAndOpened() throws {
         let inner = try Data(contentsOf: fixture("nested.pdf"))
         let c = inner.count / 3
-        let parts = [(0, c), (c, 2 * c), (2 * c, inner.count)].enumerated().map { i, r in
-            ("dance/dance.zip." + String(format: "%03d", i + 1), inner.subdata(in: r.0..<r.1))
+        let ranges: [Range<Int>] = [0..<c, c..<(2 * c), (2 * c)..<inner.count]
+        var parts: [(String, Data)] = []
+        for (i, r) in ranges.enumerated() {
+            parts.append(("dance/dance.zip." + String(format: "%03d", i + 1), inner.subdata(in: r)))
         }
         let outer = dir.appendingPathComponent("dance.zip")
         try storedZip(parts, to: outer)
