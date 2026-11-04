@@ -298,7 +298,7 @@ struct BatchView: View {
                         Label("Share folder (extra)", systemImage: "square.and.arrow.up")
                     }
                 } footer: {
-                    Text("Tap Select (top right) to copy, cut, move or delete several videos or folders at once.")
+                    Text("Tap ⋯ (top right) › Select to copy, cut, move or delete several videos or folders at once.")
                 }
             }
 
