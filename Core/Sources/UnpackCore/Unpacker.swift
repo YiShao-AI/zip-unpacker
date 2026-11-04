@@ -25,6 +25,8 @@ public struct UnpackReport {
     public let layers: Int
     /// True when a zip was left unopened because the layer limit was reached.
     public var stoppedAtLimit = false
+    /// Folder input only: zips inside that couldn't be opened ("path: reason"). They are kept as files.
+    public var failedInside: [String] = []
 }
 
 /// Progress inside one archive layer.
@@ -86,6 +88,9 @@ public struct Unpacker {
                        failure: FailureInfo? = nil,
                        onProgress: ((UnpackProgress) -> Void)? = nil,
                        progress: ((Int64) -> Void)? = nil) throws -> UnpackReport {
+        if FolderOps.isDirectory(input) {
+            return try unpackFolder(input, into: outputRoot, failure: failure, onProgress: onProgress, progress: progress)
+        }
         switch ArchiveKind.detect(input) {
         case .zip: break
         case .sevenZip: throw UnpackError.unsupportedArchive("7z")
@@ -112,6 +117,71 @@ public struct Unpacker {
         return report
     }
 
+    /// A folder keeps its structure: every zip inside (and every split zip set) is replaced by its unpacked
+    /// contents, other files are copied as they are. A zip that fails is kept as a file and listed in the report.
+    func unpackFolder(_ input: URL, into outputRoot: URL, failure: FailureInfo?,
+                      onProgress: ((UnpackProgress) -> Void)?, progress: ((Int64) -> Void)?) throws -> UnpackReport {
+        let fm = FileManager.default
+        let work = fm.temporaryDirectory.appendingPathComponent("unpack-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: work) }
+        let root = work.appendingPathComponent(input.lastPathComponent, isDirectory: true)
+        try fm.copyItem(at: input, to: root)   // a clone on APFS: no extra space until files change
+
+        let state = RunState(failure: failure ?? FailureInfo(), onProgress: onProgress, progress: progress)
+        var failed: [String] = []
+        let base = root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
+        func rel(_ url: URL) -> String {
+            url.standardizedFileURL.resolvingSymlinksInPath().path.replacingOccurrences(of: base, with: "")
+        }
+        func open(_ archive: URL) {
+            let sub = Self.unique(archive.deletingPathExtension())
+            do {
+                try extractAll(archive, into: sub, depth: 1, state: state)
+                try fm.removeItem(at: archive)
+            } catch {
+                try? fm.removeItem(at: sub)
+                let why = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let layer = state.failure.layer
+                failed.append("\(rel(archive)): \(layer > 1 ? "layer \(layer): " : "")\(why)")
+            }
+        }
+
+        // Split zips first, folder by folder.
+        let dirs = [root] + ((fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey],
+                                             options: [.skipsHiddenFiles])?.compactMap { $0 as? URL }) ?? [])
+            .filter(FolderOps.isDirectory)
+        for dir in dirs {
+            let files = FolderOps.contents(dir).filter { !FolderOps.isDirectory($0) }
+            for set in SplitArchive.sets(in: files) {
+                if set.isComplete {
+                    let joined = Self.unique(dir.appendingPathComponent(set.name))
+                    do {
+                        try SplitArchive.join(set.parts, to: joined)
+                        set.parts.forEach { try? fm.removeItem(at: $0) }
+                        open(joined)
+                    } catch {
+                        failed.append("\(rel(dir.appendingPathComponent(set.name))): couldn't join the parts")
+                    }
+                } else if let message = SplitArchive.message(for: set) {
+                    failed.append(message)
+                }
+            }
+        }
+        for file in Self.files(in: root) where SplitArchive.part(file) == nil
+            && !Self.zipBasedDocuments.contains(file.pathExtension.lowercased()) && ArchiveKind.detect(file) == .zip {
+            open(file)
+        }
+
+        try fm.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+        let folder = Self.unique(outputRoot.appendingPathComponent(input.lastPathComponent, isDirectory: true))
+        try fm.moveItem(at: root, to: folder)
+        var report = UnpackReport(folder: folder, files: Self.files(in: folder), layers: state.layers)
+        report.stoppedAtLimit = state.stoppedAtLimit
+        report.failedInside = failed
+        return report
+    }
+
     final class RunState {
         let failure: FailureInfo
         let onProgress: ((UnpackProgress) -> Void)?
@@ -128,6 +198,7 @@ public struct Unpacker {
         state.layers = max(state.layers, depth)
         state.failure.layer = depth
         let fm = FileManager.default
+        var splitDirs: Set<URL> = []
         let zip = try ZipArchive(url: archiveURL)
         zip.chunkSize = chunkSize
         let password = try choosePassword(for: zip, layer: depth)
@@ -159,6 +230,11 @@ public struct Unpacker {
             try zip.extract(entry, to: target, password: password, progress: tick)
 
             guard !Self.zipBasedDocuments.contains(target.pathExtension.lowercased()) else { continue }
+            // Pieces of a split zip (x.zip.001, .002…) are joined once the whole layer is out.
+            if SplitArchive.part(target) != nil {
+                splitDirs.insert(target.deletingLastPathComponent().standardizedFileURL)
+                continue
+            }
             let kind = ArchiveKind.detect(target)
             guard depth < depthLimit else {
                 if kind == .zip { state.stoppedAtLimit = true }
@@ -172,6 +248,26 @@ public struct Unpacker {
             case .sevenZip: throw UnpackError.unsupportedArchive("7z (inner layer)")
             case .rar: throw UnpackError.unsupportedArchive("RAR (inner layer)")
             case .other: break
+            }
+        }
+
+        for dir in splitDirs.sorted(by: { $0.path < $1.path }) {
+            let files = FolderOps.contents(dir).filter { !FolderOps.isDirectory($0) }
+            for set in SplitArchive.sets(in: files) {
+                switch set.state {
+                case .complete:
+                    guard depth < depthLimit else { state.stoppedAtLimit = true; continue }
+                    let joined = Self.unique(dir.appendingPathComponent(set.name))
+                    try SplitArchive.join(set.parts, to: joined)
+                    for part in set.parts { try fm.removeItem(at: part) }
+                    let sub = Self.unique(joined.deletingPathExtension())
+                    try extractAll(joined, into: sub, depth: depth + 1, state: state)
+                    try fm.removeItem(at: joined)
+                case .notZip:
+                    continue
+                case .missing, .needsMore:
+                    throw UnpackError.corrupt(SplitArchive.message(for: set) ?? "split zip incomplete")
+                }
             }
         }
     }

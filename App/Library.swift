@@ -67,14 +67,13 @@ final class Library: ObservableObject {
         }
         if joining.isEmpty { try? fm.removeItem(at: pendingDir.appendingPathComponent(".joining")) }
         sweepSystemInbox()
-        flattenPending()
         refresh()
     }
 
     func refresh() {
-        let files = list(pendingDir).filter { !$0.isDirectory }
-        let splitSets = SplitArchive.sets(in: files.map(\.url))
-        pending = files.filter { !joining.contains($0.name) }
+        let items = list(pendingDir)
+        let splitSets = SplitArchive.sets(in: items.filter { !$0.isDirectory }.map(\.url))
+        pending = items.filter { !joining.contains($0.name) }
         batches = list(docs)
             .filter { $0.isDirectory && $0.name.hasPrefix(Self.batchPrefix) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedDescending }
@@ -173,24 +172,6 @@ final class Library: ObservableObject {
         }
     }
 
-    /// A folder shared from another app lands in To Unpack as a folder, but the Inbox lists files only,
-    /// so its files are moved up to the top level (sub-folders included) and the empty folder removed.
-    @discardableResult
-    private func flattenPending() -> Int {
-        let dirs = ((try? fm.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: [.isDirectoryKey],
-                                                 options: [.skipsHiddenFiles])) ?? [])
-            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-        var moved = 0
-        for dir in dirs {
-            for file in Unpacker.files(in: dir) {
-                let dest = Unpacker.unique(pendingDir.appendingPathComponent(file.lastPathComponent))
-                if (try? fm.moveItem(at: file, to: dest)) != nil { moved += 1 }
-            }
-            if Unpacker.files(in: dir).isEmpty { try? fm.removeItem(at: dir) }
-        }
-        return moved
-    }
-
     /// Copies one file into To Unpack. `url` may be security-scoped (Files picker) or a provider file.
     @discardableResult
     private func copyIn(_ url: URL) -> Bool {
@@ -217,7 +198,6 @@ final class Library: ObservableObject {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             copyIn(url)
         }
-        flattenPending()
         refresh()
         return Set(fileNames(pendingDir)).subtracting(before).count
     }
@@ -231,21 +211,15 @@ final class Library: ObservableObject {
         say("Added \(plural(added, "file")) from Files.")
     }
 
-    /// Adds every file inside a picked folder (and its sub-folders).
+    /// Adds a picked folder as one Inbox item; unpacking it keeps its structure.
     func importFolder(_ folder: URL) {
         let scoped = folder.startAccessingSecurityScopedResource()
         defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
-        var added = 0
-        var coordError: NSError?
-        NSFileCoordinator().coordinate(readingItemAt: folder, options: .withoutChanges, error: &coordError) { readURL in
-            for file in Unpacker.files(in: readURL) where self.copyIn(file) { added += 1 }
-        }
+        let count = Unpacker.files(in: folder).count
+        guard count > 0 else { notice = "No files found in “\(folder.lastPathComponent)”."; return }
+        guard copyIn(folder) else { notice = "Couldn't add “\(folder.lastPathComponent)”."; return }
         refresh()
-        if added == 0 {
-            notice = "No files found in “\(folder.lastPathComponent)”."
-        } else {
-            say("Added \(plural(added, "file")) from folder “\(folder.lastPathComponent)”.")
-        }
+        say("Added folder “\(folder.lastPathComponent)” (\(plural(count, "file"))).")
     }
 
     /// Used by the Shortcuts action, which hands over file data instead of a URL.
@@ -605,7 +579,7 @@ final class Library: ObservableObject {
 
             switch result {
             case .success(var report):
-                if renameVideos {
+                if renameVideos && !item.isDirectory {
                     let videos = report.files.filter(Media.isVideo)
                     let base = item.url.deletingPathExtension().lastPathComponent
                     if !videos.isEmpty, let renamed = try? Unpacker.renameSequentially(videos, base: base) {
@@ -661,6 +635,10 @@ final class Library: ObservableObject {
     private func doneText(_ r: UnpackReport, format: UnpackFormat) -> String {
         let videos = r.files.filter(Media.isVideo).count
         let what = videos == r.files.count && videos > 0 ? plural(videos, "video") : plural(r.files.count, "file")
+        if !r.failedInside.isEmpty {
+            return "Done · \(what) · \(plural(r.failedInside.count, "zip")) inside couldn't be opened, kept as files: "
+                + r.failedInside.prefix(3).joined(separator: "; ") + (r.failedInside.count > 3 ? "…" : "")
+        }
         if r.stoppedAtLimit { return "Done · \(plural(r.layers, "layer")) removed · inner zip kept as a file" }
         if let n = format.layers, r.layers < n { return "Done · only \(plural(r.layers, "layer")) found · \(what)" }
         return "Done · \(plural(r.layers, "layer")) removed · \(what)"

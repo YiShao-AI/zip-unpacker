@@ -139,7 +139,7 @@ struct InboxList: View {
     }
 
     private func meta(_ item: FileItem) -> String {
-        var s = sizeText(item.size)
+        var s = item.isDirectory ? "Folder · \(plural(item.fileCount, "file")) · " + sizeText(item.size) : sizeText(item.size)
         if let added = item.added {
             let f = RelativeDateTimeFormatter()
             f.dateTimeStyle = .named
@@ -164,7 +164,7 @@ struct InboxList: View {
                             .font(.title2)
                             .foregroundStyle(isSelected ? Color.accentColor : Color(.tertiaryLabel))
                     } else {
-                        Image(systemName: "doc.zipper").font(.title3).foregroundStyle(.secondary)
+                        Image(systemName: item.isDirectory ? "folder" : "doc.zipper").font(.title3).foregroundStyle(.secondary)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.name).lineLimit(1).truncationMode(.middle).foregroundStyle(.primary)
