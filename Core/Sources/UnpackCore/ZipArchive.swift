@@ -245,15 +245,20 @@ public final class ZipArchive {
 
         var remaining = payload.length
         while remaining > 0 {
-            var chunk = try Self.readNext(file, count: Int(min(remaining, UInt64(chunkSize))))
-            remaining -= UInt64(chunk.count)
-            payload.decryptor?.decrypt(&chunk)
-            do {
-                if let f = filter { try f.write(chunk) } else { try sink(Data(chunk)) }
-            } catch is FilterError {
-                throw payload.decryptor == nil ? UnpackError.corrupt("bad compressed data") : UnpackError.wrongPassword
+            // FileHandle reads and the decompressor hand back autoreleased buffers. Without a pool per chunk they
+            // pile up for the whole entry: a 2 GB entry grew memory until iOS killed the app.
+            let n = try autoreleasepool { () throws -> Int in
+                var chunk = try Self.readNext(file, count: Int(min(remaining, UInt64(chunkSize))))
+                payload.decryptor?.decrypt(&chunk)
+                do {
+                    if let f = filter { try f.write(chunk) } else { try sink(Data(chunk)) }
+                } catch is FilterError {
+                    throw payload.decryptor == nil ? UnpackError.corrupt("bad compressed data") : UnpackError.wrongPassword
+                }
+                return chunk.count
             }
-            progress?(chunk.count)
+            remaining -= UInt64(n)
+            progress?(n)
         }
         do { try filter?.finalize() } catch is FilterError { throw UnpackError.corrupt("bad compressed data") }
 

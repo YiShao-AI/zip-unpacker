@@ -66,8 +66,24 @@ final class Library: ObservableObject {
             try? fm.createDirectory(at: d, withIntermediateDirectories: true)
         }
         if joining.isEmpty { try? fm.removeItem(at: pendingDir.appendingPathComponent(".joining")) }
+        if !isRunning { clearLeftovers() }
         sweepSystemInbox()
         refresh()
+    }
+
+    /// An unpack that ends normally (done or failed) deletes its work folder. One that was killed (crash,
+    /// out of memory, force quit) leaves it in tmp/ as invisible files, so they are cleared on the next launch.
+    private func clearLeftovers() {
+        let tmp = fm.temporaryDirectory
+        let leftovers = ((try? fm.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("unpack-") }
+        guard !leftovers.isEmpty else { return }
+        let bytes = leftovers.flatMap { Unpacker.files(in: $0) }
+            .reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        leftovers.forEach { try? fm.removeItem(at: $0) }
+        if bytes > 50_000_000 {
+            say("Freed \(sizeText(bytes)) left over from an unpack that didn't finish.")
+        }
     }
 
     func refresh() {

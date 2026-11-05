@@ -1,4 +1,6 @@
 import Foundation
+import SwiftUI
+import UIKit
 import UnpackCore
 
 struct FileItem: Identifiable, Hashable {
@@ -292,4 +294,22 @@ func plural(_ n: Int, _ word: String) -> String {
     guard n != 1 else { return "1 \(word)" }
     let es = ["ch", "sh", "s", "x"].contains { word.hasSuffix($0) }
     return "\(n) \(word)\(es ? "es" : "s")"
+}
+
+extension View {
+    /// A "Done" button above the keyboard plus swipe-down-to-dismiss. The password list is multi-line,
+    /// so Return adds a line and there was no other way to put the keyboard away.
+    func keyboardDoneButton() -> some View {
+        self
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+    }
 }

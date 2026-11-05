@@ -227,7 +227,7 @@ public struct Unpacker {
             }
             try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             state.failure.layer = depth
-            try zip.extract(entry, to: target, password: password, progress: tick)
+            try autoreleasepool { try zip.extract(entry, to: target, password: password, progress: tick) }
 
             guard !Self.zipBasedDocuments.contains(target.pathExtension.lowercased()) else { continue }
             // Pieces of a split zip (x.zip.001, .002…) are joined once the whole layer is out.

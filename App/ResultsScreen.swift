@@ -191,6 +191,7 @@ struct MergeSheet: View {
                     .disabled(FolderOps.cleanName(name) == nil)
                 }
             }
+            .keyboardDoneButton()
             .navigationTitle("Merge batches")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }

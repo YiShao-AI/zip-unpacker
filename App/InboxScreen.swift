@@ -279,6 +279,7 @@ struct FormatSheet: View {
                     .listRowBackground(Color.accentColor)
                 }
             }
+            .keyboardDoneButton()
             .navigationTitle("Unpack \(plural(files.count, "file"))")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

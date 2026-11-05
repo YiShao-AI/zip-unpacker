@@ -75,6 +75,7 @@ struct SettingsScreen: View {
                     Text("Unpacker \(version) · Everything happens on this iPhone; nothing is uploaded.")
                 }
             }
+            .keyboardDoneButton()
             .navigationTitle("Settings")
             .fileImporter(isPresented: $pickFolder, allowedContentTypes: [.folder]) { result in
                 if case .success(let url) = result { library.setExportDestination(url) }
