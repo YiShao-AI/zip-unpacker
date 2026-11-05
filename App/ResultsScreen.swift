@@ -49,6 +49,12 @@ struct ResultsScreen: View {
     @State private var confirmDelete = false
 
     private var chosen: [Batch] { library.batches.filter { selected.contains($0.url) } }
+    @AppStorage("sort.batches") private var sortKey = SortKey.added.rawValue
+    @AppStorage("sort.batches.asc") private var sortAscending = false
+    private var batches: [Batch] {
+        Sorting.sort(library.batches, by: SortKey(rawValue: sortKey) ?? .added, ascending: sortAscending,
+                     name: \.name, size: \.size, date: { Sorting.date($0.url) })
+    }
 
     var body: some View {
         NavigationStack(path: $nav.resultsPath) {
@@ -59,7 +65,7 @@ struct ResultsScreen: View {
                             .font(.subheadline).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity).multilineTextAlignment(.center).padding(.vertical, 18)
                     }
-                    ForEach(library.batches) { batch in
+                    ForEach(batches) { batch in
                         if selecting {
                             Button {
                                 if selected.contains(batch.url) { selected.remove(batch.url) } else { selected.insert(batch.url) }
@@ -96,7 +102,8 @@ struct ResultsScreen: View {
                         .fontWeight(selecting ? .semibold : .regular)
                     }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    if !library.batches.isEmpty { SortMenu(key: $sortKey, ascending: $sortAscending) }
                     Button { newName = ""; naming = true } label: { Image(systemName: "folder.badge.plus") }
                         .accessibilityLabel("New batch")
                 }
@@ -258,6 +265,8 @@ struct BatchView: View {
     @State private var newFolder = false
     @State private var renaming: URL?
     @State private var nameText = ""
+    @AppStorage("sort.batch") private var sortKey = SortKey.name.rawValue
+    @AppStorage("sort.batch.asc") private var sortAscending = true
 
     private var batch: Batch? { library.batches.first { $0.url == batchURL } }
     private var videos: [URL] { sections.flatMap(\.files).filter(Media.isVideo) }
@@ -344,6 +353,11 @@ struct BatchView: View {
                 if selecting {
                     Button("Done") { selecting = false; selected = [] }.fontWeight(.semibold)
                 } else {
+                    SortMenu(key: $sortKey, ascending: $sortAscending)
+                }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if !selecting {
                     Menu {
                         Button { selecting = true } label: { Label("Select", systemImage: "checkmark.circle") }
                         Button { nameText = ""; newFolder = true } label: { Label("New folder", systemImage: "folder.badge.plus") }
@@ -375,9 +389,10 @@ struct BatchView: View {
                 ClipboardBar(clip: clip, paste: { paste(.batch(batchURL)) }) { library.clipboard = nil }
             }
         }
-        .task(id: "\(batch?.fileCount ?? 0)-\(batch?.originals ?? 0)-\(reload)") {
+        .task(id: "\(batch?.fileCount ?? 0)-\(batch?.originals ?? 0)-\(reload)-\(sortKey)-\(sortAscending)") {
             let url = batchURL
-            sections = await Task.detached { Self.load(url) }.value
+            let key = SortKey(rawValue: sortKey) ?? .name, asc = sortAscending
+            sections = await Task.detached { Self.load(url, by: key, ascending: asc) }.value
             selected = selected.filter { s in sections.contains { $0.id == s || $0.files.contains(s) } }
             if DemoMode.isOn, DemoMode.screen == "player", player == nil, !videos.isEmpty {
                 player = PlayerRequest(items: videos, index: 1 < videos.count ? 1 : 0)
@@ -482,6 +497,10 @@ struct BatchView: View {
 
     @ViewBuilder
     private func itemMenu(_ items: [URL]) -> some View {
+        if items.count == 1, let one = items.first {
+            Text(one.lastPathComponent)
+            Button { UIPasteboard.general.string = one.lastPathComponent } label: { Label("Copy name", systemImage: "character.cursor.ibeam") }
+        }
         Button { library.copyToClipboard(items, from: batchURL, cut: false) } label: { Label("Copy", systemImage: "doc.on.doc") }
         Button { library.copyToClipboard(items, from: batchURL, cut: true) } label: { Label("Cut", systemImage: "scissors") }
         Button { transfer = TransferRequest(items: items, move: true) } label: { Label("Move to…", systemImage: "folder") }
@@ -540,21 +559,27 @@ struct BatchView: View {
         }
     }
 
-    nonisolated static func load(_ batch: URL) -> [FolderSection] {
+    nonisolated static func load(_ batch: URL, by key: SortKey = .name, ascending: Bool = true) -> [FolderSection] {
         let fm = FileManager.default
-        let items = ((try? fm.contentsOfDirectory(at: batch, includingPropertiesForKeys: [.isDirectoryKey],
-                                                  options: [.skipsHiddenFiles])) ?? [])
-            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        func order(_ urls: [URL]) -> [URL] {
+            // Look sizes and dates up once per item, not once per comparison.
+            let size = key == .size ? Dictionary(uniqueKeysWithValues: urls.map { ($0, Sorting.size($0)) }) : [:]
+            let date = key == .added ? Dictionary(uniqueKeysWithValues: urls.map { ($0, Sorting.date($0)) }) : [:]
+            return Sorting.sort(urls, by: key, ascending: ascending, name: \.lastPathComponent,
+                                size: { size[$0] ?? 0 }, date: { date[$0] ?? .distantPast })
+        }
+        let items = order((try? fm.contentsOfDirectory(at: batch, includingPropertiesForKeys: [.isDirectoryKey],
+                                                       options: [.skipsHiddenFiles])) ?? [])
         var sections: [FolderSection] = []
         var loose: [URL] = []
         for item in items {
             if (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                sections.append(FolderSection(id: item, title: item.lastPathComponent, files: Unpacker.files(in: item)))
+                sections.append(FolderSection(id: item, title: item.lastPathComponent, files: order(Unpacker.files(in: item))))
             } else {
                 loose.append(item)
             }
         }
-        if !loose.isEmpty { sections.append(FolderSection(id: batch, title: "Other files", files: loose)) }
+        if !loose.isEmpty { sections.append(FolderSection(id: batch, title: "Other files", files: order(loose))) }
         return sections
     }
 }
@@ -684,7 +709,7 @@ struct FileRow: View {
                     Image(systemName: "doc").font(.title3).foregroundStyle(.secondary).frame(width: 80, height: 45)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name).lineLimit(2).truncationMode(.middle).foregroundStyle(.primary)
+                    Text(name).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
                     Text(sizeText(size) + (duration.map { durationText($0).isEmpty ? "" : " · " + durationText($0) } ?? ""))
                         .font(.caption).foregroundStyle(.secondary)
                 }

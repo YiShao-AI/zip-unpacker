@@ -95,7 +95,7 @@ struct RunRow: View {
         HStack(spacing: 12) {
             icon.frame(width: 28)
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.name).lineLimit(1).truncationMode(.middle)
+                Text(item.name).fixedSize(horizontal: false, vertical: true)
                 Text(statusText).font(.caption).foregroundStyle(statusColor)
                 if case .unpacking(_, let f) = item.status {
                     ProgressView(value: f)

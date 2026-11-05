@@ -36,26 +36,27 @@ public struct ZipEntry {
 public final class ZipArchive {
     public let entries: [ZipEntry]
     /// Bytes read per step while extracting. Small values are only useful in tests.
-    public var chunkSize = 1 << 20
-    private let file: FileHandle
+    public var chunkSize = 4 << 20
+    private let file: SegmentedFile
     private let fileSize: UInt64
 
-    public init(url: URL) throws {
-        file = try FileHandle(forReadingFrom: url)
-        fileSize = try file.seekToEnd()
+    public convenience init(url: URL) throws { try self.init(parts: [url]) }
+
+    /// Reads the pieces of a split zip (x.zip.001, .002…) as one archive, without joining them on disk.
+    public init(parts: [URL]) throws {
+        file = try SegmentedFile(parts)
+        fileSize = file.size
         entries = try ZipArchive.readCentralDirectory(file, size: fileSize)
     }
 
-    deinit { try? file.close() }
-
     // MARK: Reading helpers
 
-    private static func read(_ fh: FileHandle, at offset: UInt64, count: Int) throws -> [UInt8] {
+    private static func read(_ fh: SegmentedFile, at offset: UInt64, count: Int) throws -> [UInt8] {
         try fh.seek(toOffset: offset)
         return try readNext(fh, count: count)
     }
 
-    private static func readNext(_ fh: FileHandle, count: Int) throws -> [UInt8] {
+    private static func readNext(_ fh: SegmentedFile, count: Int) throws -> [UInt8] {
         var out = [UInt8]()
         out.reserveCapacity(count)
         while out.count < count {
@@ -69,7 +70,7 @@ public final class ZipArchive {
 
     // MARK: Central directory
 
-    private static func readCentralDirectory(_ fh: FileHandle, size: UInt64) throws -> [ZipEntry] {
+    private static func readCentralDirectory(_ fh: SegmentedFile, size: UInt64) throws -> [ZipEntry] {
         guard size >= 22 else { throw UnpackError.notAnArchive }
         let tailLen = Int(min(size, 22 + 0xFFFF))
         let tailStart = size - UInt64(tailLen)
@@ -274,6 +275,50 @@ public final class ZipArchive {
             throw payload.decryptor is ZipCryptoDecryptor ? UnpackError.wrongPassword : UnpackError.integrity("CRC mismatch")
         }
         ok = true
+    }
+}
+
+// MARK: - Several files read as one
+
+/// Files read back to back as if they were one file: a normal zip is one segment, a split zip several.
+final class SegmentedFile {
+    private let handles: [FileHandle]
+    private let starts: [UInt64]     // offset of each segment in the whole
+    let size: UInt64
+    private var position: UInt64 = 0
+
+    init(_ urls: [URL]) throws {
+        guard !urls.isEmpty else { throw UnpackError.notAnArchive }
+        var hs: [FileHandle] = [], st: [UInt64] = [], total: UInt64 = 0
+        do {
+            for url in urls {
+                let h = try FileHandle(forReadingFrom: url)
+                hs.append(h)
+                st.append(total)
+                total += try h.seekToEnd()
+            }
+        } catch {
+            hs.forEach { try? $0.close() }
+            throw error
+        }
+        handles = hs; starts = st; size = total
+    }
+
+    deinit { handles.forEach { try? $0.close() } }
+
+    func seek(toOffset offset: UInt64) throws { position = offset }
+
+    /// Up to `count` bytes from the current position; may return fewer at a segment boundary. Empty at the end.
+    func read(upToCount count: Int) throws -> Data? {
+        guard position < size, count > 0 else { return Data() }
+        var i = starts.count - 1
+        while starts[i] > position { i -= 1 }
+        let segEnd = i + 1 < starts.count ? starts[i + 1] : size
+        let n = Int(min(UInt64(count), segEnd - position))
+        try handles[i].seek(toOffset: position - starts[i])
+        let d = try handles[i].read(upToCount: n) ?? Data()
+        position += UInt64(d.count)
+        return d
     }
 }
 

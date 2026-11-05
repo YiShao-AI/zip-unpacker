@@ -313,3 +313,83 @@ extension View {
             }
     }
 }
+
+// MARK: - Sorting
+
+enum SortKey: String, CaseIterable, Identifiable {
+    case name, size, added
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .name: return "Name"
+        case .size: return "Size"
+        case .added: return "Date added"
+        }
+    }
+}
+
+enum Sorting {
+    static func date(_ url: URL) -> Date {
+        let v = try? url.resourceValues(forKeys: [.addedToDirectoryDateKey, .creationDateKey])
+        return v?.addedToDirectoryDate ?? v?.creationDate ?? .distantPast
+    }
+
+    static func size(_ url: URL) -> Int64 {
+        let v = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+        if v?.isDirectory == true {
+            return Unpacker.files(in: url).reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        }
+        return Int64(v?.fileSize ?? 0)
+    }
+
+    /// Sorts anything with a name, a size and a date. Name order is Finder-style ("2" before "10").
+    static func sort<T>(_ items: [T], by key: SortKey, ascending: Bool,
+                        name: (T) -> String, size: (T) -> Int64, date: (T) -> Date) -> [T] {
+        let sorted: [T]
+        switch key {
+        case .name: sorted = items.sorted { name($0).localizedStandardCompare(name($1)) == .orderedAscending }
+        case .size: sorted = items.sorted { size($0) < size($1) }
+        case .added: sorted = items.sorted { date($0) < date($1) }
+        }
+        return ascending ? sorted : sorted.reversed()
+    }
+}
+
+/// Toolbar menu: pick Name / Size / Date added; picking the current one again flips the direction.
+struct SortMenu: View {
+    @Binding var key: String
+    @Binding var ascending: Bool
+
+    var body: some View {
+        Menu {
+            ForEach(SortKey.allCases) { k in
+                Button {
+                    if key == k.rawValue { ascending.toggle() } else {
+                        key = k.rawValue
+                        ascending = k == .name   // names A→Z; size and date biggest/newest first
+                    }
+                } label: {
+                    if key == k.rawValue {
+                        Label(k.label, systemImage: ascending ? "chevron.up" : "chevron.down")
+                    } else {
+                        Text(k.label)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+        }
+        .accessibilityLabel("Sort")
+    }
+}
+
+/// Long-press menu that shows a file's full name and copies it.
+struct FullNameMenu: ViewModifier {
+    let name: String
+    func body(content: Content) -> some View {
+        content.contextMenu {
+            Text(name)
+            Button { UIPasteboard.general.string = name } label: { Label("Copy name", systemImage: "doc.on.doc") }
+        }
+    }
+}

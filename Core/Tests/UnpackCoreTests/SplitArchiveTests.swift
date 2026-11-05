@@ -87,14 +87,16 @@ final class SplitArchiveTests: XCTestCase {
 }
 
 extension SplitArchiveTests {
+    func storedZip(_ files: [(String, Data)], to url: URL) throws { try writeStoredZip(files, to: url) }
+
     /// Writes a stored, unencrypted zip holding `files` (name → data). Enough for the reader under test.
-    func storedZip(_ files: [(String, Data)], to url: URL) throws {
+    func writeStoredZip(_ files: [(String, Data)], to url: URL) throws {
         var out = Data(), central = Data()
         func put16(_ d: inout Data, _ v: Int) { var x = UInt16(v).littleEndian; withUnsafeBytes(of: &x) { d.append(contentsOf: $0) } }
         func put32(_ d: inout Data, _ v: UInt32) { var x = v.littleEndian; withUnsafeBytes(of: &x) { d.append(contentsOf: $0) } }
         for (name, data) in files {
             let n = Data(name.utf8)
-            let crc = crc32(data)
+            let crc = data.withUnsafeBytes { CRC32.update(0, $0) }
             let offset = UInt32(out.count)
             let size = UInt32(data.count)
             put32(&out, 0x04034b50)

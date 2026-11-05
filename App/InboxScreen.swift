@@ -30,8 +30,13 @@ struct InboxList: View {
     @State private var showImporter = false
     @State private var formatRequest: FormatRequest?
     @State private var removing: FileItem?
+    @AppStorage("sort.inbox") private var sortKey = SortKey.name.rawValue
+    @AppStorage("sort.inbox.asc") private var sortAscending = true
 
-    private var pending: [FileItem] { library.pending }
+    private var pending: [FileItem] {
+        Sorting.sort(library.pending, by: SortKey(rawValue: sortKey) ?? .name, ascending: sortAscending,
+                     name: \.name, size: \.size, date: { $0.added ?? .distantPast })
+    }
     private var chosen: [FileItem] { pending.filter { selected.contains($0.url) } }
     private var allSelected: Bool { !pending.isEmpty && chosen.count == pending.count }
 
@@ -85,6 +90,11 @@ struct InboxList: View {
             }
         }
         .navigationTitle("Inbox")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if !library.pending.isEmpty { SortMenu(key: $sortKey, ascending: $sortAscending) }
+            }
+        }
         .refreshable { library.prepare() }
         .safeAreaInset(edge: .bottom) { unpackBar }
         .fileImporter(isPresented: $showImporter,
@@ -167,7 +177,7 @@ struct InboxList: View {
                         Image(systemName: item.isDirectory ? "folder" : "doc.zipper").font(.title3).foregroundStyle(.secondary)
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(item.name).lineLimit(1).truncationMode(.middle).foregroundStyle(.primary)
+                        Text(item.name).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
                         Text(meta(item)).font(.caption).foregroundStyle(.secondary)
                         if let err = library.errors[item.name] {
                             Text(err).font(.caption).foregroundStyle(.red)
@@ -178,6 +188,7 @@ struct InboxList: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .modifier(FullNameMenu(name: item.name))
             .accessibilityLabel(selecting ? item.name : "Unpack \(item.name) now")
             .accessibilityAddTraits(selecting && isSelected ? .isSelected : [])
 

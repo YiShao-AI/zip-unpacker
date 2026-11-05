@@ -134,11 +134,11 @@ public struct Unpacker {
         func rel(_ url: URL) -> String {
             url.standardizedFileURL.resolvingSymlinksInPath().path.replacingOccurrences(of: base, with: "")
         }
-        func open(_ archive: URL) {
+        func open(_ pieces: [URL], as archive: URL) {
             let sub = Self.unique(archive.deletingPathExtension())
             do {
-                try extractAll(archive, into: sub, depth: 1, state: state)
-                try fm.removeItem(at: archive)
+                try extractAll(parts: pieces, into: sub, depth: 1, state: state)
+                pieces.forEach { try? fm.removeItem(at: $0) }
             } catch {
                 try? fm.removeItem(at: sub)
                 let why = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -155,14 +155,7 @@ public struct Unpacker {
             let files = FolderOps.contents(dir).filter { !FolderOps.isDirectory($0) }
             for set in SplitArchive.sets(in: files) {
                 if set.isComplete {
-                    let joined = Self.unique(dir.appendingPathComponent(set.name))
-                    do {
-                        try SplitArchive.join(set.parts, to: joined)
-                        set.parts.forEach { try? fm.removeItem(at: $0) }
-                        open(joined)
-                    } catch {
-                        failed.append("\(rel(dir.appendingPathComponent(set.name))): couldn't join the parts")
-                    }
+                    open(set.parts, as: dir.appendingPathComponent(set.name))
                 } else if let message = SplitArchive.message(for: set) {
                     failed.append(message)
                 }
@@ -170,7 +163,7 @@ public struct Unpacker {
         }
         for file in Self.files(in: root) where SplitArchive.part(file) == nil
             && !Self.zipBasedDocuments.contains(file.pathExtension.lowercased()) && ArchiveKind.detect(file) == .zip {
-            open(file)
+            open([file], as: file)
         }
 
         try fm.createDirectory(at: outputRoot, withIntermediateDirectories: true)
@@ -195,11 +188,16 @@ public struct Unpacker {
     }
 
     private func extractAll(_ archiveURL: URL, into dest: URL, depth: Int, state: RunState) throws {
+        try extractAll(parts: [archiveURL], into: dest, depth: depth, state: state)
+    }
+
+    /// `parts` is one zip, or the pieces of a split zip read in place (no joined copy on disk).
+    private func extractAll(parts archiveParts: [URL], into dest: URL, depth: Int, state: RunState) throws {
         state.layers = max(state.layers, depth)
         state.failure.layer = depth
         let fm = FileManager.default
         var splitDirs: Set<URL> = []
-        let zip = try ZipArchive(url: archiveURL)
+        let zip = try ZipArchive(parts: archiveParts)
         zip.chunkSize = chunkSize
         let password = try choosePassword(for: zip, layer: depth)
         // extract() reports archive bytes read, so measure the layer in compressed bytes.
@@ -257,12 +255,9 @@ public struct Unpacker {
                 switch set.state {
                 case .complete:
                     guard depth < depthLimit else { state.stoppedAtLimit = true; continue }
-                    let joined = Self.unique(dir.appendingPathComponent(set.name))
-                    try SplitArchive.join(set.parts, to: joined)
+                    let sub = Self.unique(dir.appendingPathComponent(set.name).deletingPathExtension())
+                    try extractAll(parts: set.parts, into: sub, depth: depth + 1, state: state)
                     for part in set.parts { try fm.removeItem(at: part) }
-                    let sub = Self.unique(joined.deletingPathExtension())
-                    try extractAll(joined, into: sub, depth: depth + 1, state: state)
-                    try fm.removeItem(at: joined)
                 case .notZip:
                     continue
                 case .missing, .needsMore:

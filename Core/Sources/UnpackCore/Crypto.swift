@@ -1,5 +1,6 @@
 import Foundation
 import CommonCrypto
+import zlib
 
 // MARK: - CRC-32
 
@@ -10,13 +11,18 @@ enum CRC32 {
         return c
     }
 
-    /// Continue a standard CRC-32. Start with `crc = 0`.
+    /// Continue a standard CRC-32. Start with `crc = 0`. Uses zlib, which has a hardware-accelerated
+    /// CRC on Apple chips (the old table loop ran byte by byte).
     static func update(_ crc: UInt32, _ bytes: UnsafeRawBufferPointer) -> UInt32 {
-        var c = ~crc
-        table.withUnsafeBufferPointer { t in
-            for b in bytes { c = t[Int((c ^ UInt32(b)) & 0xFF)] ^ (c >> 8) }
+        guard var p = bytes.baseAddress?.assumingMemoryBound(to: Bytef.self) else { return crc }
+        var c = uLong(crc)
+        var left = bytes.count
+        while left > 0 {
+            let n = min(left, Int(UInt32.max >> 1))
+            c = zlib.crc32(c, p, uInt(n))
+            p += n; left -= n
         }
-        return ~c
+        return UInt32(truncatingIfNeeded: c)
     }
 
     static func checksum<C: Collection>(_ bytes: C) -> UInt32 where C.Element == UInt8 {
@@ -45,20 +51,33 @@ final class ZipCryptoDecryptor: Decryptor {
         guard h[11] == check else { throw UnpackError.wrongPassword }
     }
 
-    @inline(__always) private func update(_ b: UInt8) {
-        let t = CRC32.table
-        k0 = t[Int((k0 ^ UInt32(b)) & 0xFF)] ^ (k0 >> 8)
-        k1 = (k1 &+ (k0 & 0xFF)) &* 134_775_813 &+ 1
-        k2 = t[Int((k2 ^ (k1 >> 24)) & 0xFF)] ^ (k2 >> 8)
+    private func update(_ b: UInt8) {
+        CRC32.table.withUnsafeBufferPointer { t in
+            k0 = t[Int((k0 ^ UInt32(b)) & 0xFF)] ^ (k0 >> 8)
+            k1 = (k1 &+ (k0 & 0xFF)) &* 134_775_813 &+ 1
+            k2 = t[Int((k2 ^ (k1 >> 24)) & 0xFF)] ^ (k2 >> 8)
+        }
     }
 
+    /// Hot loop: keys in locals, raw pointers, no per-byte array copies or bounds checks.
+    /// (The old loop fetched the CRC table array once per byte, which retained/released it every byte.)
     func decrypt(_ buf: inout [UInt8]) {
-        for i in buf.indices {
-            let t = k2 | 2
-            let p = buf[i] ^ UInt8(truncatingIfNeeded: (t &* (t ^ 1)) >> 8)
-            update(p)
-            buf[i] = p
+        var a = k0, b = k1, c = k2
+        CRC32.table.withUnsafeBufferPointer { tb in
+            let t = tb.baseAddress!
+            buf.withUnsafeMutableBufferPointer { bp in
+                guard let p = bp.baseAddress else { return }
+                for i in 0..<bp.count {
+                    let s = c | 2
+                    let plain = p[i] ^ UInt8(truncatingIfNeeded: (s &* (s ^ 1)) >> 8)
+                    a = t[Int((a ^ UInt32(plain)) & 0xFF)] ^ (a >> 8)
+                    b = (b &+ (a & 0xFF)) &* 134_775_813 &+ 1
+                    c = t[Int((c ^ (b >> 24)) & 0xFF)] ^ (c >> 8)
+                    p[i] = plain
+                }
+            }
         }
+        k0 = a; k1 = b; k2 = c
     }
 }
 
@@ -100,13 +119,14 @@ final class WinZipAESDecryptor: Decryptor {
     /// Encrypt `blocks` consecutive counter values into `out`.
     private func makeKeystream(blocks: Int, into out: inout [UInt8]) {
         var ctr = [UInt8](repeating: 0, count: blocks * 16)
-        for b in 0..<blocks {
-            counter &+= 1
-            var c = counter.littleEndian
-            withUnsafeBytes(of: &c) { src in
-                for j in 0..<8 { ctr[b * 16 + j] = src[j] }
+        var c = counter
+        ctr.withUnsafeMutableBytes { p in
+            for b in 0..<blocks {
+                c &+= 1
+                p.storeBytes(of: c.littleEndian, toByteOffset: b * 16, as: UInt64.self)
             }
         }
+        counter = c
         let n = blocks * 16
         out = [UInt8](repeating: 0, count: n)
         var moved = 0
@@ -125,7 +145,19 @@ final class WinZipAESDecryptor: Decryptor {
         if full > 0 {
             var ks = [UInt8]()
             makeKeystream(blocks: full, into: &ks)
-            for j in 0..<(full * 16) { buf[i + j] ^= ks[j] }
+            let start = i
+            buf.withUnsafeMutableBytes { bp in
+                ks.withUnsafeBytes { kp in
+                    // 8 bytes at a time instead of one.
+                    let words = full * 2
+                    for w in 0..<words {
+                        let o = start + w * 8
+                        let x = bp.loadUnaligned(fromByteOffset: o, as: UInt64.self)
+                            ^ kp.loadUnaligned(fromByteOffset: w * 8, as: UInt64.self)
+                        bp.storeBytes(of: x, toByteOffset: o, as: UInt64.self)
+                    }
+                }
+            }
             i += full * 16
         }
         // Partial tail block; keep the rest for next time.
