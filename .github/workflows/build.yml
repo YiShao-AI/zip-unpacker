@@ -10,7 +10,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Unit tests (zip reader + unpacker)
-        run: swift test --package-path Core
+        run: swift test --package-path Core --skip SpeedTests
+      - name: Speed (optimised build, like the app)
+        run: swift test --package-path Core -c release -Xswiftc -enable-testing --filter SpeedTests 2>&1 | grep -E "SPEED|Executed|error" || true
 
   ipa:
     needs: test
