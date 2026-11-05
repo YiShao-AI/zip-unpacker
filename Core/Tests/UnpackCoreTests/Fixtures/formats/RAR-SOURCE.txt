@@ -1,0 +1,4 @@
+rar4.rar, rar5.rar, rar5-encnames.rar (password "password") and multi.part01-08.rar are test files from
+libarchive (https://github.com/libarchive/libarchive, v3.8.1, libarchive/test/*.rar.uu), BSD-2-Clause:
+test_read_format_rar.rar, test_read_format_rar5_compressed.rar,
+test_read_format_rar5_encrypted_filenames.rar, test_read_format_rar5_multiarchive.partNN.rar.

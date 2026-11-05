@@ -20,7 +20,7 @@ public enum SplitArchive {
         case missing([Int])
         /// Parts 1…n are all here but none of them is the end of the zip.
         case needsMore(after: Int)
-        /// Part 1 isn't a zip (7z, RAR…), so it can't be checked or joined here.
+        /// Part 1 isn't an archive Unpacker can read.
         case notZip
     }
 
@@ -54,8 +54,30 @@ public enum SplitArchive {
         let top = numbers.max() ?? 0
         let missing = (1...max(top, 1)).filter { !have.contains($0) }
         if !missing.isEmpty { return .missing(missing) }
-        guard let first = parts.first, startsLikeZip(first) else { return .notZip }
-        return endsWithZipEnd(parts) ? .complete : .needsMore(after: top)
+        guard let first = parts.first else { return .notZip }
+        if startsLikeZip(first) { return endsWithZipEnd(parts) ? .complete : .needsMore(after: top) }
+        switch ArchiveKind.detect(first) {
+        case .engine("7z"):
+            // The 7z start header says how long the whole archive is.
+            guard let want = sevenZipLength(first) else { return .notZip }
+            let have = parts.reduce(UInt64(0)) { $0 + UInt64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+            return have >= want ? .complete : .needsMore(after: top)
+        case .engine:
+            return .complete      // RAR, tar…: no cheap length check; 7-Zip reports a short set as a missing part
+        default:
+            return .notZip
+        }
+    }
+
+    static func sevenZipLength(_ url: URL) -> UInt64? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        let b = [UInt8](h.readData(ofLength: 32))
+        guard b.count == 32 else { return nil }
+        func u64(_ o: Int) -> UInt64 { (0..<8).reduce(UInt64(0)) { $0 | UInt64(b[o + $1]) << (8 * UInt64($1)) } }
+        let (offset, size) = (u64(12), u64(20))
+        guard offset < 1 << 50, size < 1 << 40 else { return nil }
+        return 32 + offset + size
     }
 
     static func startsLikeZip(_ url: URL) -> Bool {
@@ -125,11 +147,11 @@ public enum SplitArchive {
         case .complete: return nil
         case .missing(let m):
             let list = m.prefix(6).map(n).joined(separator: ", ") + (m.count > 6 ? "…" : "")
-            return "Part of split zip “\(set.name)”. Missing \(list) — add all parts."
+            return "Part of split archive “\(set.name)”. Missing \(list) — add all parts."
         case .needsMore(let after):
-            return "Part of split zip “\(set.name)”. Add the parts after \(n(after))."
+            return "Part of split archive “\(set.name)”. Add the parts after \(n(after))."
         case .notZip:
-            return "Split archive “\(set.name)” isn't a zip. Open it in Unzip instead."
+            return "“\(set.name)” is split into parts but isn't an archive Unpacker can read."
         }
     }
 }

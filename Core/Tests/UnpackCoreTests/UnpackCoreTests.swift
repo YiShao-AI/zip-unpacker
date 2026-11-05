@@ -199,9 +199,10 @@ final class UnpackCoreTests: XCTestCase {
             .appendingPathComponent("evil.txt").path))
     }
 
-    func test7zRejected() throws {
+    /// 7z is read by 7-Zip now; a file with only the 7z signature is reported as damaged, not unsupported.
+    func testDamaged7zReported() throws {
         XCTAssertThrowsError(try Unpacker(passwords: []).unpack(fixture("fake7z.pdf"), into: out)) {
-            XCTAssertEqual($0 as? UnpackError, .unsupportedArchive("7z"))
+            guard case .corrupt? = $0 as? UnpackError else { return XCTFail("\($0)") }
         }
     }
 

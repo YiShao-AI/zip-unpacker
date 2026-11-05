@@ -88,6 +88,9 @@ jobs:
           APP=build/Build/Products/Debug-iphonesimulator/Unpacker.app
           BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
           xcrun simctl install "$SIM" "$APP"
+          # The linked app must see every 7-Zip format (static registration survives linking).
+          xcrun simctl launch --console-pty "$SIM" "$BUNDLE" -UnpackerSelfTest YES 2>&1 | tee selftest.txt | grep SELFTEST || true
+          grep -q "SELFTEST missing-count: 0" selftest.txt || { echo "::warning::7-Zip formats missing in the app build"; }
           mkdir -p screenshots
           for screen in inbox select sheet progress results batch player settings; do
             xcrun simctl terminate "$SIM" "$BUNDLE" 2>/dev/null || true

@@ -50,7 +50,7 @@ struct InboxList: View {
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
             } footer: {
-                Text("Or in Baidu Netdisk: Share › Open in… › Unpacker. Files are recognised as archives by their contents, whatever the extension.")
+                Text("Or in Baidu Netdisk: Share › Open in… › Unpacker. zip, 7z, RAR, tar, gz, xz and more are recognised by their contents, whatever the extension.")
             }
 
             Section {

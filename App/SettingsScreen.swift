@@ -74,6 +74,19 @@ struct SettingsScreen: View {
                 } footer: {
                     Text("Unpacker \(version) · Everything happens on this iPhone; nothing is uploaded.")
                 }
+
+                Section {
+                    Text(SupportedFormats.names.joined(separator: " · "))
+                        .font(.subheadline)
+                    if !SupportedFormats.engineMissing.isEmpty {
+                        Text("Missing from this build: " + SupportedFormats.engineMissing.joined(separator: ", "))
+                            .font(.caption).foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Formats it opens")
+                } footer: {
+                    Text("Including password-protected 7z, RAR and zip, encrypted file lists, multi-part sets (.001, .part1.rar, .r00, .z01) and archives inside archives.")
+                }
             }
             .keyboardDoneButton()
             .navigationTitle("Settings")

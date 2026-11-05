@@ -1,9 +1,20 @@
 import SwiftUI
+import UnpackCore
 
 @main
 struct UnpackerApp: App {
     @StateObject private var library = Library.shared
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        // CI: `simctl launch --console … -UnpackerSelfTest YES` prints what the linked app can open, then quits.
+        if UserDefaults.standard.bool(forKey: "UnpackerSelfTest") {
+            print("SELFTEST formats: " + SupportedFormats.names.joined(separator: ","))
+            print("SELFTEST missing: " + SupportedFormats.engineMissing.joined(separator: ","))
+            print("SELFTEST missing-count: \(SupportedFormats.engineMissing.count)")
+            exit(SupportedFormats.engineMissing.isEmpty ? 0 : 1)
+        }
+    }
 
     var body: some Scene {
         WindowGroup {

@@ -103,6 +103,10 @@ final class Library: ObservableObject {
         exportName = ExportDestination.name
         let names = Set(pending.map(\.name))
         errors = errors.filter { names.contains($0.key) }
+        let siblings = Set(items.map { $0.name.lowercased() })
+        for item in items where !item.isDirectory && Volumes.role(item.url, siblings: siblings) == .later {
+            errors[item.name] = "Later part of a multi-part archive: unpacked together with its first part."
+        }
         for set in splitSets {
             if set.isComplete {
                 joinParts(set)
@@ -537,9 +541,16 @@ final class Library: ObservableObject {
     }
 
     @discardableResult
-    func unpack(_ files: [FileItem], format: UnpackFormat) async -> RunSummary {
+    func unpack(_ chosen: [FileItem], format: UnpackFormat) async -> RunSummary {
         var summary = RunSummary()
-        guard !isRunning, !files.isEmpty else { return summary }
+        guard !isRunning, !chosen.isEmpty else { return summary }
+        // Later volumes of a multi-part RAR / spanned zip are read through the first volume.
+        let siblings = Set(fileNames(pendingDir).map { $0.lowercased() })
+        let files = chosen.filter { $0.isDirectory || Volumes.role($0.url, siblings: siblings) != .later }
+        guard !files.isEmpty else {
+            notice = "These are later parts of a multi-part archive. Unpack its first part (…part1.rar, .rar or .zip) — the other parts are read with it."
+            return summary
+        }
         lastFormat = format
 
         let batch = docs.appendingPathComponent(nextBatchName(), isDirectory: true)
@@ -597,7 +608,7 @@ final class Library: ObservableObject {
             case .success(var report):
                 if renameVideos && !item.isDirectory {
                     let videos = report.files.filter(Media.isVideo)
-                    let base = item.url.deletingPathExtension().lastPathComponent
+                    let base = Unpacker.folderName(for: item.name)
                     if !videos.isEmpty, let renamed = try? Unpacker.renameSequentially(videos, base: base) {
                         report.files = report.files.filter { !Media.isVideo($0) } + renamed
                     }
@@ -605,10 +616,14 @@ final class Library: ObservableObject {
                 summary.succeeded.append(report)
                 errors[item.name] = nil
                 run?.items[i].status = .done(doneText(report, format: format))
-                if deleteOriginals {
-                    try? fm.removeItem(at: item.url)
-                } else {
-                    try? fm.moveItem(at: item.url, to: Unpacker.unique(originalsDir.appendingPathComponent(item.name)))
+                let volumes = !item.isDirectory && Volumes.role(item.url, siblings: siblings) == .first
+                    ? Volumes.members(of: item.url) : [item.url]
+                for original in volumes {
+                    if deleteOriginals {
+                        try? fm.removeItem(at: original)
+                    } else {
+                        try? fm.moveItem(at: original, to: Unpacker.unique(originalsDir.appendingPathComponent(original.lastPathComponent)))
+                    }
                 }
             case .failure(let error):
                 let message = failureText(error, layer: failure.layer, format: format)
@@ -667,7 +682,7 @@ final class Library: ObservableObject {
         case .passwordRequired?:
             return "Failed on layer \(layer): needs a password, none set"
         case .notAnArchive? where layer == 1:
-            return "Failed: not a zip file"
+            return "Failed: not an archive Unpacker can read"
         default:
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return layer > 1 ? "Failed on layer \(layer): \(message)" : "Failed: \(message)"

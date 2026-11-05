@@ -1,21 +1,5 @@
 import Foundation
 
-public enum ArchiveKind: Equatable {
-    case zip, sevenZip, rar, other
-
-    /// Detects the format from the file's first bytes; the extension is ignored.
-    public static func detect(_ url: URL) -> ArchiveKind {
-        guard let fh = try? FileHandle(forReadingFrom: url) else { return .other }
-        defer { try? fh.close() }
-        let b = [UInt8]((try? fh.read(upToCount: 8)) ?? Data())
-        guard b.count >= 4 else { return .other }
-        if b[0] == 0x50, b[1] == 0x4B, [3, 5, 7].contains(b[2]), b[3] == b[2] + 1 { return .zip }
-        if b.count >= 6, b[0...5] == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] { return .sevenZip }
-        if b.count >= 6, b[0...5] == [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07] { return .rar }
-        return .other
-    }
-}
-
 public struct UnpackReport {
     /// Folder holding the final contents.
     public let folder: URL
@@ -91,12 +75,7 @@ public struct Unpacker {
         if FolderOps.isDirectory(input) {
             return try unpackFolder(input, into: outputRoot, failure: failure, onProgress: onProgress, progress: progress)
         }
-        switch ArchiveKind.detect(input) {
-        case .zip: break
-        case .sevenZip: throw UnpackError.unsupportedArchive("7z")
-        case .rar: throw UnpackError.unsupportedArchive("RAR")
-        case .other: throw UnpackError.notAnArchive
-        }
+        guard ArchiveKind.detect(input).isArchive else { throw UnpackError.notAnArchive }
 
         let fm = FileManager.default
         let work = fm.temporaryDirectory.appendingPathComponent("unpack-\(UUID().uuidString)", isDirectory: true)
@@ -134,36 +113,10 @@ public struct Unpacker {
         func rel(_ url: URL) -> String {
             url.standardizedFileURL.resolvingSymlinksInPath().path.replacingOccurrences(of: base, with: "")
         }
-        func open(_ pieces: [URL], as archive: URL) {
-            let sub = Self.unique(archive.deletingPathExtension())
-            do {
-                try extractAll(parts: pieces, into: sub, depth: 1, state: state)
-                pieces.forEach { try? fm.removeItem(at: $0) }
-            } catch {
-                try? fm.removeItem(at: sub)
-                let why = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                let layer = state.failure.layer
-                failed.append("\(rel(archive)): \(layer > 1 ? "layer \(layer): " : "")\(why)")
-            }
-        }
-
-        // Split zips first, folder by folder.
-        let dirs = [root] + ((fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey],
-                                             options: [.skipsHiddenFiles])?.compactMap { $0 as? URL }) ?? [])
-            .filter(FolderOps.isDirectory)
-        for dir in dirs {
-            let files = FolderOps.contents(dir).filter { !FolderOps.isDirectory($0) }
-            for set in SplitArchive.sets(in: files) {
-                if set.isComplete {
-                    open(set.parts, as: dir.appendingPathComponent(set.name))
-                } else if let message = SplitArchive.message(for: set) {
-                    failed.append(message)
-                }
-            }
-        }
-        for file in Self.files(in: root) where SplitArchive.part(file) == nil
-            && !Self.zipBasedDocuments.contains(file.pathExtension.lowercased()) && ArchiveKind.detect(file) == .zip {
-            open([file], as: file)
+        try expandNested(root, producedBy: 0, state: state) { archive, error in
+            let why = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            let layer = state.failure.layer
+            failed.append("\(rel(archive)): \(layer > 1 ? "layer \(layer): " : "")\(why)")
         }
 
         try fm.createDirectory(at: outputRoot, withIntermediateDirectories: true)
@@ -191,12 +144,42 @@ public struct Unpacker {
         try extractAll(parts: [archiveURL], into: dest, depth: depth, state: state)
     }
 
-    /// `parts` is one zip, or the pieces of a split zip read in place (no joined copy on disk).
+    /// Extracts one layer into `dest`, then opens whatever archives it contained.
+    /// `parts` is one archive, the pieces of a byte-split archive (read in place), or the first volume of a
+    /// multi-volume RAR / spanned zip (7-Zip finds the other volumes next to it).
     private func extractAll(parts archiveParts: [URL], into dest: URL, depth: Int, state: RunState) throws {
         state.layers = max(state.layers, depth)
         state.failure.layer = depth
+        let first = archiveParts[0]
+        let kind = ArchiveKind.detect(first)
+        switch kind {
+        case .zip where Volumes.isSpannedZip(first):
+            try extractWithEngine("zip", parts: archiveParts, into: dest, depth: depth, state: state)
+        case .zip:
+            do {
+                try extractZip(parts: archiveParts, into: dest, depth: depth, state: state)
+            } catch let original as UnpackError {
+                // Zip methods the built-in reader lacks (Deflate64, BZip2, LZMA, PPMd, XZ, Zstd) and odd layouts.
+                guard case .unsupportedMethod = original else {
+                    guard case .corrupt = original else { throw original }
+                    do { try extractWithEngine("zip", parts: archiveParts, into: dest, depth: depth, state: state) }
+                    catch { throw original }   // both readers failed: the built-in reader's message is clearer
+                    break
+                }
+                try extractWithEngine("zip", parts: archiveParts, into: dest, depth: depth, state: state)
+            }
+        case .engine(let format):
+            try extractWithEngine(format, parts: archiveParts, into: dest, depth: depth, state: state,
+                                  defaultName: Self.streamName(of: first, kind: kind))
+        case .other:
+            throw UnpackError.notAnArchive
+        }
+        try expandNested(dest, producedBy: depth, state: state, onFailure: nil)
+    }
+
+    /// The built-in zip reader: every entry of one layer into `dest` (no nested handling here).
+    private func extractZip(parts archiveParts: [URL], into dest: URL, depth: Int, state: RunState) throws {
         let fm = FileManager.default
-        var splitDirs: Set<URL> = []
         let zip = try ZipArchive(parts: archiveParts)
         zip.chunkSize = chunkSize
         let password = try choosePassword(for: zip, layer: depth)
@@ -215,7 +198,6 @@ public struct Unpacker {
             state.onProgress?(UnpackProgress(layer: depth, layerBytes: layerTotal, layerTotal: layerTotal,
                                              totalBytes: state.total))
         }
-
         for entry in zip.entries {
             guard let parts = entry.safeComponents, parts.first != "__MACOSX", parts.last != ".DS_Store" else { continue }
             let target = parts.reduce(dest) { $0.appendingPathComponent($1) }
@@ -226,43 +208,96 @@ public struct Unpacker {
             try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             state.failure.layer = depth
             try autoreleasepool { try zip.extract(entry, to: target, password: password, progress: tick) }
+        }
+    }
 
-            guard !Self.zipBasedDocuments.contains(target.pathExtension.lowercased()) else { continue }
-            // Pieces of a split zip (x.zip.001, .002…) are joined once the whole layer is out.
-            if SplitArchive.part(target) != nil {
-                splitDirs.insert(target.deletingLastPathComponent().standardizedFileURL)
-                continue
+    /// 7-Zip for everything else. Tries this layer's passwords in turn (the first one that works is kept);
+    /// an archive without encryption never asks, so the first try just works.
+    private func extractWithEngine(_ format: String, parts: [URL], into dest: URL, depth: Int, state: RunState,
+                                   defaultName: String = "file") throws {
+        let fm = FileManager.default
+        let candidates = passwords(forLayer: depth).filter { !$0.isEmpty }
+        let tries: [String?] = candidates.isEmpty ? [nil] : candidates.map { Optional($0) }
+        let start = state.total
+        var lastError: Error = UnpackError.wrongPassword
+        for pw in tries {
+            try? fm.removeItem(at: dest)
+            try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+            state.failure.layer = depth
+            do {
+                try SevenZipEngine.extract(format: format, parts: parts, into: dest, defaultName: defaultName,
+                                           password: pw) { done, total in
+                    let d = Int64(clamping: done), t = Int64(clamping: max(total, done))
+                    state.total = start + d
+                    state.progress?(state.total)
+                    state.onProgress?(UnpackProgress(layer: depth, layerBytes: d, layerTotal: t, totalBytes: state.total))
+                }
+                return
+            } catch UnpackError.wrongPassword {
+                lastError = UnpackError.wrongPassword
+            } catch UnpackError.passwordRequired {
+                throw candidates.isEmpty ? UnpackError.passwordRequired : UnpackError.wrongPassword
             }
-            let kind = ArchiveKind.detect(target)
-            guard depth < depthLimit else {
-                if kind == .zip { state.stoppedAtLimit = true }
-                continue
+        }
+        try? fm.removeItem(at: dest)
+        throw lastError
+    }
+
+    /// Opens the archives found among the files under `dir` that layer `depth` produced (a snapshot taken
+    /// first, so deeper layers aren't visited twice): byte-split sets, multi-volume sets, single archives.
+    /// With `onFailure`, an archive that fails is reported there and kept as a file; without, the error is thrown.
+    private func expandNested(_ dir: URL, producedBy depth: Int, state: RunState,
+                              onFailure: ((URL, Error) -> Void)?) throws {
+        let fm = FileManager.default
+        let files = Self.files(in: dir)
+        let byFolder = Dictionary(grouping: files) { $0.deletingLastPathComponent().standardizedFileURL }
+        var consumed = Set<URL>()
+
+        func open(_ parts: [URL], named archive: URL, removing members: [URL]) throws {
+            guard depth < depthLimit else { state.stoppedAtLimit = true; return }
+            let kind = ArchiveKind.detect(parts[0])
+            let sub = Self.unique(archive.deletingLastPathComponent()
+                .appendingPathComponent(Self.folderName(for: archive.lastPathComponent), isDirectory: true))
+            do {
+                try extractAll(parts: parts, into: sub, depth: depth + 1, state: state)
+            } catch {
+                try? fm.removeItem(at: sub)
+                guard let report = onFailure else { throw error }
+                report(archive, error)
+                return
             }
-            switch kind {
-            case .zip:
-                let sub = Self.unique(target.deletingPathExtension())
-                try extractAll(target, into: sub, depth: depth + 1, state: state)
-                try fm.removeItem(at: target)
-            case .sevenZip: throw UnpackError.unsupportedArchive("7z (inner layer)")
-            case .rar: throw UnpackError.unsupportedArchive("RAR (inner layer)")
-            case .other: break
+            members.forEach { try? fm.removeItem(at: $0) }
+            // A single compressed stream ("x.mp4.gz") leaves its file next to where the archive was.
+            if kind.isSingleStream {
+                let inside = FolderOps.contents(sub)
+                if inside.count == 1 {
+                    let target = Self.unique(archive.deletingLastPathComponent().appendingPathComponent(inside[0].lastPathComponent))
+                    if (try? fm.moveItem(at: inside[0], to: target)) != nil { try? fm.removeItem(at: sub) }
+                }
             }
         }
 
-        for dir in splitDirs.sorted(by: { $0.path < $1.path }) {
-            let files = FolderOps.contents(dir).filter { !FolderOps.isDirectory($0) }
-            for set in SplitArchive.sets(in: files) {
-                switch set.state {
-                case .complete:
-                    guard depth < depthLimit else { state.stoppedAtLimit = true; continue }
-                    let sub = Self.unique(dir.appendingPathComponent(set.name).deletingPathExtension())
-                    try extractAll(parts: set.parts, into: sub, depth: depth + 1, state: state)
-                    for part in set.parts { try fm.removeItem(at: part) }
-                case .notZip:
+        for (folder, list) in byFolder.sorted(by: { $0.key.path < $1.key.path }) {
+            let siblings = Set(list.map { $0.lastPathComponent.lowercased() })
+            for set in SplitArchive.sets(in: list) {
+                consumed.formUnion(set.parts)
+                let archive = folder.appendingPathComponent(set.name)
+                guard set.isComplete else {
+                    let error = UnpackError.missingPart(SplitArchive.message(for: set) ?? "Split archive “\(set.name)” is incomplete")
+                    guard let report = onFailure else { throw error }
+                    report(archive, error)
                     continue
-                case .missing, .needsMore:
-                    throw UnpackError.corrupt(SplitArchive.message(for: set) ?? "split zip incomplete")
                 }
+                try open(set.parts, named: archive, removing: set.parts)
+            }
+            for file in list where !consumed.contains(file) {
+                guard !Self.zipBasedDocuments.contains(file.pathExtension.lowercased()) else { continue }
+                let role = Volumes.role(file, siblings: siblings)
+                if role == .later { continue }                   // read through the first volume
+                guard ArchiveKind.detect(file).isArchive else { continue }
+                let members = role == .first ? Volumes.members(of: file) : [file]
+                consumed.formUnion(members)
+                try open([file], named: file, removing: members)
             }
         }
     }
@@ -274,6 +309,36 @@ public struct Unpacker {
         guard !candidates.isEmpty else { throw UnpackError.passwordRequired }
         for pw in candidates where zip.accepts(password: pw, for: probe) { return pw }
         throw UnpackError.wrongPassword
+    }
+
+    /// Folder for an archive's contents: its name without archive extensions ("x.part1.rar" → "x",
+    /// "x.tar.gz" → "x", "7月17日.pdf" → "7月17日").
+    public static func folderName(for name: String) -> String {
+        var n = name
+        if let p = Volumes.rarPart(n) { n = p.base }
+        let archiveExts: Set<String> = ["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "tbz", "tbz2", "xz", "txz",
+                                         "zst", "lzma", "z", "cab", "iso", "arj", "lzh", "wim", "xar", "cpio", "pdf"]
+        while true {
+            let u = URL(fileURLWithPath: n)
+            let e = u.pathExtension.lowercased()
+            guard !e.isEmpty, archiveExts.contains(e) || (e.count >= 3 && e.allSatisfy(\.isNumber)) else { break }   // "10.11.zip" → "10.11"
+            let stripped = u.deletingPathExtension().lastPathComponent
+            guard !stripped.isEmpty else { break }
+            n = stripped
+        }
+        return n.isEmpty ? name : n
+    }
+
+    /// Name for the one file inside a compressed stream: "x.tar.gz" → "x.tar", "x.tgz" → "x.tar", "x.mp4.xz" → "x.mp4".
+    static func streamName(of url: URL, kind: ArchiveKind) -> String {
+        let name = url.lastPathComponent
+        let e = url.pathExtension.lowercased()
+        let stem = url.deletingPathExtension().lastPathComponent
+        switch e {
+        case "tgz", "tbz", "tbz2", "txz", "tzst": return stem + ".tar"
+        case "gz", "bz2", "xz", "zst", "lzma", "z": return stem.isEmpty ? name + ".out" : stem
+        default: return kind.isSingleStream ? name + ".out" : stem
+        }
     }
 
     // MARK: Helpers

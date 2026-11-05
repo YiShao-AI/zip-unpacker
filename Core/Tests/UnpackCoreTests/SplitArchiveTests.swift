@@ -79,9 +79,15 @@ final class SplitArchiveTests: XCTestCase {
         XCTAssertEqual(set.state, .needsMore(after: 3))
     }
 
-    func testNonZipSetIsLeftAlone() throws {
+    /// 7z sets are checked against the length in the 7z start header (this fake one claims 32 bytes).
+    func test7zSetUsesStartHeaderLength() throws {
         let data = try Data(contentsOf: fixture("fake7z.pdf"))
         try split(data, base: "b.7z", sizes: [data.count / 2, 0])
+        XCTAssertEqual(SplitArchive.sets(in: Unpacker.files(in: dir))[0].state, .complete)
+    }
+
+    func testUnknownSplitSetIsLeftAlone() throws {
+        try split(Data(repeating: 0x41, count: 100), base: "notes.txt", sizes: [50, 0])
         XCTAssertEqual(SplitArchive.sets(in: Unpacker.files(in: dir))[0].state, .notZip)
     }
 }
