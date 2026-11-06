@@ -6,12 +6,15 @@ public enum ArchiveKind: Equatable {
     case zip
     /// Read by 7-Zip; the value is its handler name.
     case engine(String)
+    /// A PNG holding a file hidden by TT-tools. Ordinary PNGs are `.other`.
+    case ttImage
     case other
 
     public var isArchive: Bool { self != .other }
 
     /// Formats that hold one compressed stream rather than files ("x.tar.gz", "x.mp4.xz").
     public var isSingleStream: Bool {
+        if self == .ttImage { return true }
         if case .engine(let f) = self { return ["gzip", "bzip2", "xz", "zstd", "lzma", "Z"].contains(f) }
         return false
     }
@@ -41,6 +44,7 @@ public enum ArchiveKind: Equatable {
         if at(0, "xar!") { return .engine("Xar") }
         if at(0, "070701") || at(0, "070702") || at(0, "070707") { return .engine("Cpio") }
         if at(257, "ustar") { return .engine("tar") }
+        if at(0, TTImage.pngSignature) { return TTImage.probe(url) != nil ? .ttImage : .other }
         // No signature at the start: only trusted together with the extension.
         if ext == "lzma", at(0, [0x5D, 0x00, 0x00]) { return .engine("lzma") }
         if ext == "iso" || ext == "img" {

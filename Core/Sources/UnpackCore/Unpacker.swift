@@ -171,6 +171,8 @@ public struct Unpacker {
         case .engine(let format):
             try extractWithEngine(format, parts: archiveParts, into: dest, depth: depth, state: state,
                                   defaultName: Self.streamName(of: first, kind: kind))
+        case .ttImage:
+            try extractTTImage(first, into: dest, depth: depth, state: state)
         case .other:
             throw UnpackError.notAnArchive
         }
@@ -208,6 +210,26 @@ public struct Unpacker {
             try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             state.failure.layer = depth
             try autoreleasepool { try zip.extract(entry, to: target, password: password, progress: tick) }
+        }
+    }
+
+    /// The file hidden in a TT-tools PNG, named after the PNG. Its password check needs no decoding.
+    private func extractTTImage(_ image: URL, into dest: URL, depth: Int, state: RunState) throws {
+        guard let header = TTImage.probe(image) else { throw UnpackError.notAnArchive }
+        var password: String? = nil
+        if header.isEncrypted {
+            let candidates = passwords(forLayer: depth).filter { !$0.isEmpty }
+            guard !candidates.isEmpty else { throw UnpackError.passwordRequired }
+            guard let match = candidates.first(where: header.accepts) else { throw UnpackError.wrongPassword }
+            password = match
+        }
+        try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+        let name = image.deletingPathExtension().lastPathComponent + "." + header.fileExtension
+        let start = state.total
+        try TTImage.extract(image, header: header, password: password, to: dest.appendingPathComponent(name)) { done, total in
+            state.total = start + done
+            state.progress?(state.total)
+            state.onProgress?(UnpackProgress(layer: depth, layerBytes: done, layerTotal: total, totalBytes: state.total))
         }
     }
 

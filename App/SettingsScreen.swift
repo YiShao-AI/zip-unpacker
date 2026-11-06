@@ -86,7 +86,7 @@ struct SettingsScreen: View {
                 } header: {
                     Text("Formats it opens")
                 } footer: {
-                    Text("Including password-protected 7z, RAR and zip, encrypted file lists, multi-part sets (.001, .part1.rar, .r00, .z01) and archives inside archives.")
+                    Text("Including password-protected 7z, RAR and zip, encrypted file lists, multi-part sets (.001, .part1.rar, .r00, .z01), archives inside archives, and files hidden in PNGs by TT-tools.")
                 }
             }
             .keyboardDoneButton()

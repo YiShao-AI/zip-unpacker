@@ -50,7 +50,7 @@ public enum SupportedFormats {
     ]
 
     public static var names: [String] {
-        ["zip"] + engineFormats.filter { SevenZipEngine.has($0.0) }.map(\.1)
+        ["zip"] + engineFormats.filter { SevenZipEngine.has($0.0) }.map(\.1) + ["TT-tools PNG"]
     }
 
     public static var engineMissing: [String] {
