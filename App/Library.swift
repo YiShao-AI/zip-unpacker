@@ -32,6 +32,7 @@ final class Library: ObservableObject {
 
     @Published private(set) var pending: [FileItem] = []
     @Published private(set) var batches: [Batch] = []
+    @Published private(set) var favorites: [URL] = [] { didSet { favoritePaths = Set(favorites.map(\.standardizedFileURL.path)) } }
     @Published private(set) var originalsCount = 0
     @Published private(set) var exportName: String? = ExportDestination.name
     @Published private(set) var copying: Set<URL> = []
@@ -57,6 +58,7 @@ final class Library: ObservableObject {
 
     var isRunning: Bool { run.map { $0.phase != .done } ?? false }
 
+    private var favoritePaths: Set<String> = []
     private var toastTask: Task<Void, Never>?
 
     private init() { prepare() }
@@ -90,8 +92,9 @@ final class Library: ObservableObject {
         let items = list(pendingDir)
         let splitSets = SplitArchive.sets(in: items.filter { !$0.isDirectory }.map(\.url))
         pending = items.filter { !joining.contains($0.name) }
-        batches = list(docs)
-            .filter { $0.isDirectory && $0.name.hasPrefix(Self.batchPrefix) }
+        let folders = list(docs).filter { $0.isDirectory && $0.name.hasPrefix(Self.batchPrefix) }
+        favorites = folders.flatMap(\.favorites)
+        batches = folders
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedDescending }
             .map { item in
                 let originals = ((try? fm.contentsOfDirectory(at: item.url, includingPropertiesForKeys: nil,
@@ -166,7 +169,8 @@ final class Library: ObservableObject {
             if v?.isDirectory == true {
                 let files = Unpacker.files(in: url)
                 let size = files.reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
-                return FileItem(url: url, size: size, fileCount: files.count, isDirectory: true, added: added)
+                return FileItem(url: url, size: size, fileCount: files.count, isDirectory: true, added: added,
+                                favorites: files.filter(Favorites.isFavorite))
             }
             return FileItem(url: url, size: Int64(v?.fileSize ?? 0), fileCount: 1, isDirectory: false, added: added)
         }
@@ -293,6 +297,22 @@ final class Library: ObservableObject {
             if !quiet { notice = "Copy to “\(dest.lastPathComponent)” failed: \(error.localizedDescription) The batch is still in Unpacker." }
             return .failure(error)
         }
+    }
+
+    // MARK: Favorites
+
+    func isFavorite(_ url: URL) -> Bool { favoritePaths.contains(url.standardizedFileURL.path) }
+
+    func toggleFavorite(_ url: URL) {
+        let on = !isFavorite(url)
+        do {
+            try Favorites.set(on, url)
+        } catch {
+            notice = "Couldn't update Favorites: \(error.localizedDescription)"
+            return
+        }
+        let path = url.standardizedFileURL.path
+        if on { favorites.append(url) } else { favorites.removeAll { $0.standardizedFileURL.path == path } }
     }
 
     // MARK: Delete

@@ -3,7 +3,7 @@ import UnpackCore
 
 /// Launch arguments used by CI to screenshot each screen in the Simulator:
 ///   -UnpackerDemo YES          fill the app with sample files (fake data, no real archives)
-///   -UnpackerScreen <name>     inbox | select | sheet | progress | results | batch | player | settings
+///   -UnpackerScreen <name>     inbox | select | sheet | progress | results | favorites | batch | player | settings
 /// Launch arguments land in UserDefaults' argument domain, so nothing here persists.
 enum DemoMode {
     static var isOn: Bool { UserDefaults.standard.bool(forKey: "UnpackerDemo") }
@@ -41,6 +41,9 @@ enum DemoMode {
             BatchInfo(format: UnpackFormat.standard.summary, exportedTo: exported,
                       exportedAt: exported == nil ? nil : Date(timeIntervalSinceNow: -3600)).save(folder)
         }
+        for path in ["Batch 2026-11-03 14-30/7月13日舞蹈/7月13日舞蹈.mp4", "Batch 2026-11-02 21-05/7月15日舞蹈/video_output_00001-audio_22.mp4"] {
+            try? Favorites.set(true, docs.appendingPathComponent(path))
+        }
         library.defaultFormat = .standard
         library.quickPicks = QuickPick.builtIn
         library.useGlobalFormat = screen != "sheet"
@@ -56,6 +59,7 @@ enum DemoMode {
         try? await Task.sleep(nanoseconds: 500_000_000)
         switch screen {
         case "results": nav.tab = .results
+        case "favorites": nav.tab = .results; nav.favoritesOpen = true
         case "batch", "player": if let first = library.batches.first { nav.open(first) }
         case "settings": nav.tab = .settings
         default: break

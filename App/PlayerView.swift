@@ -5,12 +5,15 @@ import SwiftUI
 /// Full-screen player for every video in a batch. Swipe left/right (like Photos) for the next or previous one.
 struct PlayerView: View {
     let items: [URL]
+    let scope: String
+    @EnvironmentObject var library: Library
     @State private var index: Int
     @State private var share: ShareItems?
     @Environment(\.dismiss) private var dismiss
 
-    init(items: [URL], start: Int) {
+    init(items: [URL], start: Int, scope: String = "in this batch") {
         self.items = items
+        self.scope = scope
         _index = State(initialValue: min(max(start, 0), max(items.count - 1, 0)))
     }
 
@@ -22,9 +25,10 @@ struct PlayerView: View {
                 VStack(spacing: 2) {
                     Text(items[index].lastPathComponent).font(.subheadline.weight(.semibold))
                         .lineLimit(1).truncationMode(.middle)
-                    Text("\(index + 1) of \(items.count) in this batch").font(.caption).foregroundStyle(.secondary)
+                    Text("\(index + 1) of \(items.count) \(scope)").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
+                favoriteButton
                 Button { share = ShareItems(urls: [items[index]]) } label: {
                     Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44)
                 }
@@ -57,6 +61,16 @@ struct PlayerView: View {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         }
         .sheet(item: $share) { ActivityView(items: $0.urls) }
+    }
+
+    private var favoriteButton: some View {
+        let on = library.isFavorite(items[index])
+        return Button { library.toggleFavorite(items[index]) } label: {
+            Image(systemName: on ? "star.fill" : "star")
+                .foregroundStyle(on ? Color.yellow : Color.white)
+                .frame(width: 44, height: 44)
+        }
+        .accessibilityLabel(on ? "Remove from Favorites" : "Add to Favorites")
     }
 }
 

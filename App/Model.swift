@@ -9,6 +9,8 @@ struct FileItem: Identifiable, Hashable {
     let fileCount: Int
     let isDirectory: Bool
     let added: Date?
+    /// Starred files inside, for folders.
+    var favorites: [URL] = []
     var id: URL { url }
     var name: String { url.lastPathComponent }
 }

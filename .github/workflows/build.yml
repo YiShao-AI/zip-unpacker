@@ -92,7 +92,7 @@ jobs:
           xcrun simctl launch --console-pty "$SIM" "$BUNDLE" -UnpackerSelfTest YES 2>&1 | tee selftest.txt | grep SELFTEST || true
           grep -q "SELFTEST missing-count: 0" selftest.txt || { echo "::warning::7-Zip formats missing in the app build"; }
           mkdir -p screenshots
-          for screen in inbox select sheet progress results batch player settings; do
+          for screen in inbox select sheet progress results favorites batch player settings; do
             xcrun simctl terminate "$SIM" "$BUNDLE" 2>/dev/null || true
             xcrun simctl launch "$SIM" "$BUNDLE" -UnpackerDemo YES -UnpackerScreen "$screen"
             sleep 7

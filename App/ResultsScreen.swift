@@ -59,6 +59,24 @@ struct ResultsScreen: View {
     var body: some View {
         NavigationStack(path: $nav.resultsPath) {
             List {
+                if !selecting && !library.favorites.isEmpty {
+                    Section {
+                        Button { nav.favoritesOpen = true } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "star.fill").font(.title2).foregroundStyle(.yellow)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Favorites").font(.body.weight(.semibold)).foregroundStyle(.primary)
+                                    Text(plural(library.favorites.count, "file")).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 4)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
                 Section {
                     if library.batches.isEmpty {
                         Text("No batches yet. Unpack something from the Inbox.")
@@ -91,6 +109,7 @@ struct ResultsScreen: View {
             }
             .navigationTitle("Results")
             .navigationDestination(for: Batch.self) { BatchView(batchURL: $0.url) }
+            .navigationDestination(isPresented: $nav.favoritesOpen) { FavoritesView() }
             .refreshable { library.refresh() }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -308,7 +327,7 @@ struct BatchView: View {
                         Label("Share folder (extra)", systemImage: "square.and.arrow.up")
                     }
                 } footer: {
-                    Text("Tap ⋯ (top right) › Select to copy, cut, move or delete several videos or folders at once.")
+                    Text("Tap ⋯ (top right) › Select to copy, cut, move or delete several videos or folders at once. Swipe right on a video to add it to Favorites.")
                 }
             }
 
@@ -324,8 +343,12 @@ struct BatchView: View {
                         Text("Empty folder").font(.subheadline).foregroundStyle(.secondary)
                     }
                     ForEach(section.files, id: \.self) { url in
-                        FileRow(url: url, base: section.id, selected: selecting ? isSelected(url) : nil) {
+                        FileRow(url: url, base: section.id, selected: selecting ? isSelected(url) : nil,
+                                favorite: library.isFavorite(url)) {
                             if selecting { toggle(url) } else { open(url) }
+                        }
+                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                            if !selecting { FavoriteButton(url: url) }
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if !selecting {
@@ -398,7 +421,9 @@ struct BatchView: View {
                 player = PlayerRequest(items: videos, index: 1 < videos.count ? 1 : 0)
             }
         }
-        .fullScreenCover(item: $player) { req in PlayerView(items: req.items, start: req.index) }
+        .fullScreenCover(item: $player) { req in
+            PlayerView(items: req.items, start: req.index).environmentObject(library)
+        }
         .quickLookPreview($preview)
         .sheet(item: $share) { ActivityView(items: $0.urls) }
         .sheet(item: $transfer) { req in
@@ -500,6 +525,7 @@ struct BatchView: View {
         if items.count == 1, let one = items.first {
             Text(one.lastPathComponent)
             Button { UIPasteboard.general.string = one.lastPathComponent } label: { Label("Copy name", systemImage: "character.cursor.ibeam") }
+            if !sections.contains(where: { $0.id == one }) { FavoriteButton(url: one) }
         }
         Button { library.copyToClipboard(items, from: batchURL, cut: false) } label: { Label("Copy", systemImage: "doc.on.doc") }
         Button { library.copyToClipboard(items, from: batchURL, cut: true) } label: { Label("Cut", systemImage: "scissors") }
@@ -584,6 +610,67 @@ struct BatchView: View {
     }
 }
 
+/// Adds or removes a star; used for swipe actions and long-press menus.
+struct FavoriteButton: View {
+    let url: URL
+    @EnvironmentObject var library: Library
+
+    var body: some View {
+        let on = library.isFavorite(url)
+        Button { library.toggleFavorite(url) } label: {
+            Label(on ? "Remove from Favorites" : "Add to Favorites", systemImage: on ? "star.slash" : "star")
+        }
+        .tint(.orange)
+    }
+}
+
+/// Every starred file across all batches. The files stay in their batches; this is only a view of them.
+struct FavoritesView: View {
+    @EnvironmentObject var library: Library
+    @State private var player: PlayerRequest?
+    @State private var preview: URL?
+    @AppStorage("sort.favorites") private var sortKey = SortKey.added.rawValue
+    @AppStorage("sort.favorites.asc") private var sortAscending = false
+
+    private var items: [URL] {
+        Sorting.sort(library.favorites, by: SortKey(rawValue: sortKey) ?? .added, ascending: sortAscending,
+                     name: \.lastPathComponent, size: Sorting.size, date: Sorting.date)
+    }
+
+    var body: some View {
+        let items = self.items
+        let videos = items.filter(Media.isVideo)
+        List {
+            if items.isEmpty {
+                Text("No favorites yet. Swipe right on a video, or tap the star while watching.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).multilineTextAlignment(.center).padding(.vertical, 18)
+            }
+            ForEach(items, id: \.self) { url in
+                // Base two levels up: names repeat between folders, so show "folder/name".
+                FileRow(url: url, base: url.deletingLastPathComponent().deletingLastPathComponent(), favorite: true) {
+                    if Media.isVideo(url), let i = videos.firstIndex(of: url) {
+                        player = PlayerRequest(items: videos, index: i)
+                    } else {
+                        preview = url
+                    }
+                }
+                .swipeActions(edge: .leading, allowsFullSwipe: true) { FavoriteButton(url: url) }
+                .contextMenu { FavoriteButton(url: url) }
+            }
+        }
+        .navigationTitle("Favorites")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) { SortMenu(key: $sortKey, ascending: $sortAscending) }
+        }
+        .fullScreenCover(item: $player) { req in
+            PlayerView(items: req.items, start: req.index, scope: "in Favorites").environmentObject(library)
+        }
+        .quickLookPreview($preview)
+    }
+}
+
 /// Where Move to… / Copy to… puts things: any batch (keeping each original's folder), a folder in a batch, or a new batch.
 struct DestinationSheet: View {
     let request: TransferRequest
@@ -662,6 +749,7 @@ struct FileRow: View {
     let base: URL
     /// nil when not selecting.
     var selected: Bool? = nil
+    var favorite = false
     let action: () -> Void
     @State private var thumb: UIImage?
     @State private var duration: Double?
@@ -714,11 +802,15 @@ struct FileRow: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
+                if favorite {
+                    Image(systemName: "star.fill").font(.caption).foregroundStyle(.yellow)
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(selected != nil ? name : Media.isVideo(url) ? "Play \(name)" : "Open \(name)")
+        .accessibilityValue(favorite ? "Favorite" : "")
         .accessibilityAddTraits(selected == true ? .isSelected : [])
         .task(id: url) {
             guard Media.isVideo(url) else { return }

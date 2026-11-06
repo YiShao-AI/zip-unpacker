@@ -7,8 +7,10 @@ final class AppNav: ObservableObject {
     enum Tab: Hashable { case inbox, results, settings }
     @Published var tab: Tab = .inbox
     @Published var resultsPath: [Batch] = []
+    @Published var favoritesOpen = false
 
     func open(_ batch: Batch) {
+        favoritesOpen = false
         resultsPath = [batch]
         tab = .results
     }
