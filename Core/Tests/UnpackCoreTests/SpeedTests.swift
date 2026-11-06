@@ -40,6 +40,21 @@ final class SpeedTests: XCTestCase {
         report("zipcrypto", 128) { for _ in 0..<32 { d.decrypt(&data) } }
     }
 
+    /// The real TT-tools image (700 KB hidden, password) decoded 30 times: the slowest kind, with the SHA-256 key stream.
+    func testTTImageSpeed() throws {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "tt-real-watermark.png", withExtension: nil, subdirectory: "Fixtures/formats"))
+        let target = FileManager.default.temporaryDirectory.appendingPathComponent("speed-\(UUID().uuidString).jpg")
+        defer { try? FileManager.default.removeItem(at: target) }
+        let header = try XCTUnwrap(TTImage.probe(url))
+        report("tt-image", 21) {
+            for _ in 0..<30 {
+                try? FileManager.default.removeItem(at: target)
+                try? TTImage.extract(url, header: header, password: "123456", to: target)
+            }
+        }
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: target.path)[.size] as? Int, 735_770)
+    }
+
     /// Stored zip of one 512 MB file, extracted through the whole pipeline (read, CRC, write).
     func testExtractSpeed() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("speed-\(UUID().uuidString)")

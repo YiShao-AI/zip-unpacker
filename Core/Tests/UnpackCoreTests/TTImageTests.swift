@@ -70,11 +70,15 @@ final class TTImageTests: XCTestCase {
         XCTAssertEqual(ArchiveKind.detect(renamed), .ttImage)
     }
 
+    /// Cut inside the hidden data (it ends about 45 % of the way down this image).
     func testCutShortImageIsReported() throws {
         let whole = try Data(contentsOf: fx("tt-new.png"))
         let cut = out.appendingPathComponent("cut.png")
-        try whole.prefix(whole.count / 2).write(to: cut)
-        XCTAssertThrowsError(try Unpacker(passwords: []).unpack(cut, into: out.appendingPathComponent("r")))
+        try whole.prefix(whole.count * 3 / 10).write(to: cut)
+        XCTAssertEqual(ArchiveKind.detect(cut), .ttImage)
+        XCTAssertThrowsError(try Unpacker(passwords: []).unpack(cut, into: out.appendingPathComponent("r"))) {
+            guard case .corrupt = $0 as? UnpackError else { return XCTFail("\($0)") }
+        }
         XCTAssertTrue(FileManager.default.subpaths(atPath: out.appendingPathComponent("r").path)?.isEmpty ?? true)
     }
 
