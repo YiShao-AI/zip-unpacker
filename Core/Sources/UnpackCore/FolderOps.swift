@@ -81,6 +81,20 @@ public enum FolderOps {
         }
     }
 
+    /// Moves the favorites in `batch` into `target`, each into a folder named after its own, so the
+    /// batch can be deleted. Stops at the first one that can't move; the rest stay where they are.
+    @discardableResult
+    public static func saveFavorites(in batch: URL, to target: URL) throws -> Int {
+        let base = batch.standardizedFileURL.path
+        let starred = Unpacker.files(in: batch).filter(Favorites.isFavorite)
+        for file in starred {
+            let parent = file.deletingLastPathComponent()
+            let isLoose = parent.standardizedFileURL.path == base
+            try transfer(file, into: isLoose ? target : target.appendingPathComponent(parent.lastPathComponent), move: true)
+        }
+        return starred.count
+    }
+
     /// Combines `sources` into one new folder `destination` (folders with the same name merge).
     /// With `move`, the sources are emptied and removed.
     @discardableResult

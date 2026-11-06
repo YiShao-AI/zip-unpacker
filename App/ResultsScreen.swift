@@ -168,7 +168,7 @@ struct ResultsScreen: View {
                     selecting = false
                 }
             } message: {
-                Text("Their files are removed from Unpacker. Copies already exported elsewhere are kept.")
+                Text(library.deleteBatchesNote(chosen.map(\.url)))
             }
             .onChange(of: library.batches.map(\.url)) { urls in selected.formIntersection(urls) }
         }
@@ -446,11 +446,11 @@ struct BatchView: View {
         }
         .confirmationDialog("Delete “\(batchURL.lastPathComponent)”?", isPresented: $confirmDeleteBatch, titleVisibility: .visible) {
             Button("Delete batch", role: .destructive) {
-                library.delete(batchURL)
+                library.deleteBatches([batchURL])
                 dismiss()
             }
         } message: {
-            Text("Its files are removed from Unpacker. Copies already exported elsewhere are kept.")
+            Text(library.deleteBatchesNote([batchURL]))
         }
         .confirmationDialog("Rename the videos in “\(batchURL.lastPathComponent)”?", isPresented: $confirmRename,
                             titleVisibility: .visible) {

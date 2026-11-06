@@ -431,10 +431,50 @@ final class Library: ObservableObject {
         say("Deleted \(plural(urls.count, "item")).")
     }
 
+    /// Favorites from deleted batches end up here, so deleting a batch never loses one.
+    var favoritesBatch: URL { docs.appendingPathComponent(Self.batchPrefix + "Favorites", isDirectory: true) }
+
+    /// Deletes batches, moving their favorites to `favoritesBatch` first. A batch whose favorites
+    /// can't be moved is left alone. Deleting `favoritesBatch` itself really deletes what's in it.
     func deleteBatches(_ urls: [URL]) {
-        for url in urls { try? fm.removeItem(at: url) }
+        let home = favoritesBatch.standardizedFileURL
+        var deleted = 0, saved = 0
+        var failed: [String] = []
+        // The favorites batch first, so favorites from the other batches still get a place to go.
+        if urls.contains(where: { $0.standardizedFileURL == home }) {
+            try? fm.removeItem(at: favoritesBatch)
+            deleted += 1
+        }
+        for url in urls where url.standardizedFileURL != home {
+            do {
+                saved += try FolderOps.saveFavorites(in: url, to: favoritesBatch)
+                try? fm.removeItem(at: url)
+                deleted += 1
+            } catch {
+                failed.append(url.lastPathComponent)
+            }
+        }
         refresh()
-        say("Deleted \(plural(urls.count, "batch")).")
+        if !failed.isEmpty {
+            notice = "Not deleted, because its favorites couldn't be moved: " + failed.joined(separator: ", ")
+        }
+        say("Deleted \(plural(deleted, "batch"))."
+            + (saved > 0 ? " Moved \(plural(saved, "favorite")) to “\(favoritesBatch.lastPathComponent)”." : ""))
+    }
+
+    /// The explanation in the confirmation before deleting batches.
+    func deleteBatchesNote(_ urls: [URL]) -> String {
+        let home = favoritesBatch.standardizedFileURL.path
+        var count = 0, lost = 0
+        for favorite in favorites {
+            let path = favorite.standardizedFileURL.path
+            guard urls.contains(where: { path.hasPrefix($0.standardizedFileURL.path + "/") }) else { continue }
+            if path.hasPrefix(home + "/") { lost += 1 } else { count += 1 }
+        }
+        var note = "Files are removed from Unpacker. Copies already exported elsewhere are kept."
+        if count > 0 { note += " \(plural(count, "favorite")) will move to “\(favoritesBatch.lastPathComponent)”." }
+        if lost > 0 { note += " \(plural(lost, "favorite")) in “\(favoritesBatch.lastPathComponent)” will be deleted." }
+        return note
     }
 
     /// Moves or copies items picked inside `batch` to another place. Big copies run off the main thread.
